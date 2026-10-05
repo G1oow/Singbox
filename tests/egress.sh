@@ -80,8 +80,14 @@ assert_unchanged() {
     [[ $(cat "$is_config_json") == "$before" ]] || { echo "原配置被意外修改"; exit 1; }
 }
 
+assert_status() {
+    local status
+    status=$(main egress status) || return 1
+    [[ $status == *"默认 direct 出口策略: $1"* ]] || { echo "出口状态不匹配: $status"; exit 1; }
+}
+
 if [[ ${SING_BOX_BIN:-} ]]; then
-    is_core_ver=$("$SING_BOX_BIN" version | head -n1 | tr -d '\r' | cut -d ' ' -f3)
+    is_core_ver=$("$SING_BOX_BIN" version | sed -n '1p' | tr -d '\r' | cut -d ' ' -f3)
 fi
 modern=0
 if [[ $(printf '%s\n' 1.12.0 "$is_core_ver" | sort -V | head -n1) == 1.12.0 ]]; then
@@ -91,7 +97,7 @@ echo "测试内核版本: $is_core_ver"
 
 fixture
 before=$(cat "$is_config_json")
-main egress status | grep -q auto
+assert_status auto
 assert_unchanged
 [[ ! -s $test_dir/service.log ]]
 echo "通过：status 只读"
@@ -119,7 +125,7 @@ for mode in ipv4 ipv6 ipv4-only ipv6-only auto; do
     auto) expected=auto ;;
     esac
     main egress "$mode" >/dev/null
-    main egress status | grep -q "$expected"
+    assert_status "$expected"
     assert_json '.inbounds[0].listen == "::" and .outbounds[0].connect_timeout == "5s"
         and .outbounds[1] == {"tag":"custom","type":"direct"}
         and .route.rules[0].outbound == "custom"'
@@ -142,20 +148,20 @@ echo "通过：备份与重复设置不增加重复解析器"
 fixture
 main egress ipv6 >/dev/null
 main dns 11 >/dev/null
-main egress status | grep -q prefer_ipv6
+assert_status prefer_ipv6
 if ((modern)); then
     assert_json '.outbounds[0].domain_resolver.server == "dns"'
 fi
 main dns none >/dev/null
-main egress status | grep -q prefer_ipv6
+assert_status prefer_ipv6
 if ((modern)); then
     assert_json '.outbounds[0].domain_resolver.server == "egress-local"'
 fi
 main egress auto >/dev/null
 main dns 88 >/dev/null
-main egress status | grep -q auto
+assert_status auto
 main dns none >/dev/null
-main egress status | grep -q auto
+assert_status auto
 echo "通过：DNS 更换、系统 DNS、恢复默认相互兼容"
 
 fixture
@@ -186,12 +192,12 @@ echo "通过：OpenRC 重启与状态检查"
 
 fixture
 printf '2\n' | main egress >/dev/null
-main egress status | grep -q prefer_ipv6
+assert_status prefer_ipv6
 echo "通过：交互选择"
 
 fixture
 printf '9\n6\n1\n' | main main >/dev/null
-main egress status | grep -q prefer_ipv4
+assert_status prefer_ipv4
 echo "通过：主菜单入口"
 
 if ((modern)); then
