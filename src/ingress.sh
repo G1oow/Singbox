@@ -63,6 +63,21 @@ ingress_public_ip() {
     printf '%s\n' "$address"
 }
 
+ingress_dns_matches() {
+    local response=$1 address=$2 expected record actual
+    [[ $response && $address ]] || return 1
+    if [[ $address != *:* ]]; then
+        [[ $(jq -r --arg address "$address" '[.Answer[]?.data] | index($address) != null' <<<"$response") == true ]]
+        return
+    fi
+    expected=$(ingress_ipv6_hex "$address") || return 1
+    while IFS= read -r record; do
+        actual=$(ingress_ipv6_hex "$record") || continue
+        [[ $actual != "$expected" ]] || return 0
+    done < <(jq -r '.Answer[]?.data // empty' <<<"$response")
+    return 1
+}
+
 ingress_family() {
     case $1 in
     "::" | "") echo dual ;;
@@ -83,6 +98,75 @@ ingress_status() {
     else
         msg "${file##*/}: $(ingress_family "$listen")，监听 $listen"
     fi
+}
+
+# 创建与修改入口使用同一地址校验规则；gen 仅验证显式地址，不探测网络。
+ingress_resolve_listen() {
+    local mode=$1 address=$2
+    case $mode in
+    ipv4)
+        address=${address:-0.0.0.0}
+        ingress_valid_ip ipv4 "$address" || { err "无效的 IPv4 监听地址。"; return 1; }
+        ;;
+    ipv6)
+        if [[ ! $address ]]; then
+            [[ ! $is_gen ]] || { err "gen 的 IPv6 入口需要显式提供 --listen 地址。"; return 1; }
+            address=$(ingress_public_ip ipv6) || return 1
+        fi
+        address=${address#[}
+        address=${address%]}
+        ingress_valid_ip ipv6 "$address" || { err "IPv6-only 需要具体 IPv6 地址，不能使用 ::、IPv4 映射或链路本地地址。"; return 1; }
+        if [[ ! $is_gen ]]; then
+            ingress_ipv6_assigned "$address" || { err "该 IPv6 地址未分配给本机，请显式指定 VPS 的 IPv6 地址。"; return 1; }
+        fi
+        ;;
+    dual)
+        [[ ! $address ]] || { err "dual 使用 ::，不接受额外监听地址。"; return 1; }
+        address=::
+        ;;
+    *) err "无法识别入口策略: $mode"; return 1 ;;
+    esac
+    printf '%s\n' "$address"
+}
+
+ingress_prepare_add() {
+    local interactive=$1 selection
+    local modes=(ipv4 ipv6 dual)
+    if [[ $is_use_tls ]]; then
+        [[ ! $is_add_ingress && ! $is_add_listen ]] ||
+            { err "此协议由 Caddy/外部反代接入，不支持 --ingress 或 --listen；公网入口由反代管理。"; return 1; }
+        [[ ! $interactive ]] || msg "此协议使用反代入口，保留本地后端监听；公网 IPv4/IPv6 由反代配置决定。"
+        return 0
+    fi
+    if [[ $interactive && ! $is_add_ingress ]]; then
+        ask list selection "IPv4入口 IPv6入口 双栈入口" "\n请选择新节点的入口策略:\n"
+        is_add_ingress=${modes[$REPLY - 1]}
+        if [[ $is_add_ingress == ipv6 && ! $is_add_listen ]]; then
+            is_default_arg=auto
+            ask string is_add_listen "IPv6 监听地址 (回车自动检测):"
+            [[ $is_add_listen != auto ]] || is_add_listen=
+        fi
+    fi
+    # 修改现有节点但未提供入口参数时，继续保留其原监听地址。
+    [[ ! $is_change || $is_add_ingress || $is_add_listen ]] || return 0
+    [[ ! $is_add_listen || $is_add_ingress ]] ||
+        { err "--listen 必须配合 --ingress ipv4 或 ipv6 使用。"; return 1; }
+    is_add_ingress=${is_add_ingress:-dual}
+    is_add_listen_resolved=$(ingress_resolve_listen "$is_add_ingress" "$is_add_listen") || return 1
+    is_ingress_listen=$is_add_listen_resolved
+    [[ ! $is_gen ]] || return 0
+    case $is_add_ingress in
+    ipv6) ip=$is_add_listen_resolved ;;
+    ipv4)
+        if [[ $is_add_listen_resolved == 0.0.0.0 ]]; then
+            ip=$(ingress_public_ip ipv4) || return 1
+        else
+            ip=$is_add_listen_resolved
+        fi
+        ;;
+    dual) get_ip || return 1 ;;
+    esac
+    is_add_public_ip=$ip
 }
 
 ingress_set() {
@@ -115,25 +199,7 @@ ingress_set() {
         err "此节点由 Caddy 接入，不能通过修改本地后端监听来切换公网入口。"
         return 1
     fi
-    case $mode in
-    ipv4)
-        address=${address:-0.0.0.0}
-        ingress_valid_ip ipv4 "$address" || { err "无效的 IPv4 监听地址。"; return 1; }
-        ;;
-    ipv6)
-        if [[ ! $address ]]; then
-            address=$(ingress_public_ip ipv6) || return 1
-        fi
-        address=${address#[}
-        address=${address%]}
-        ingress_valid_ip ipv6 "$address" || { err "IPv6-only 需要具体 IPv6 地址，不能使用 ::、IPv4 映射或链路本地地址。"; return 1; }
-        ingress_ipv6_assigned "$address" || { err "该 IPv6 地址未分配给本机，请显式指定 VPS 的 IPv6 地址。"; return 1; }
-        ;;
-    dual)
-        [[ ! $address ]] || { err "dual 使用 ::，不接受额外监听地址。"; return 1; }
-        address=::
-        ;;
-    esac
+    address=$(ingress_resolve_listen "$mode" "$address") || return 1
     config=$(jq --arg address "$address" '.inbounds[0].listen=$address' "$target") || return 1
     load network.sh
     network_apply "$target" "$config" || return 1
@@ -155,10 +221,16 @@ ingress_addr() {
     elif [[ $is_address_family && $family != dual && $family != "$is_address_family" ]]; then
         err "该节点只监听 $family，不能生成 $is_address_family 入口链接。"
         return 1
+    elif [[ $is_gen ]]; then
+        address=$listen
     elif [[ $listen != "::" && $listen != 0.0.0.0 && $listen ]]; then
         address=$listen
     elif [[ $is_address_family || $family == ipv4 ]]; then
-        address=$(ingress_public_ip "${is_address_family:-ipv4}") || return 1
+        if [[ $is_add_public_ip ]] && ingress_valid_ip "${is_address_family:-ipv4}" "$is_add_public_ip"; then
+            address=$is_add_public_ip
+        else
+            address=$(ingress_public_ip "${is_address_family:-ipv4}") || return 1
+        fi
     elif [[ $is_anytls_domain ]]; then
         address=$is_anytls_domain
     else

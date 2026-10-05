@@ -132,8 +132,8 @@ get_uuid() {
 
 get_ip() {
     [[ $ip || $is_no_auto_tls || $is_gen || $is_dont_get_ip ]] && return
-    export "$(_wget -4 -qO- https://one.one.one.one/cdn-cgi/trace | grep ip=)" &>/dev/null
-    [[ ! $ip ]] && export "$(_wget -6 -qO- https://one.one.one.one/cdn-cgi/trace | grep ip=)" &>/dev/null
+    export "$(_wget -4 -T 8 -t 1 -qO- https://one.one.one.one/cdn-cgi/trace | grep ip=)" &>/dev/null
+    [[ ! $ip ]] && export "$(_wget -6 -T 8 -t 1 -qO- https://one.one.one.one/cdn-cgi/trace | grep ip=)" &>/dev/null
     [[ ! $ip ]] && {
         err "获取服务器 IP 失败.."
         return 1
@@ -266,7 +266,7 @@ ask() {
     [[ $is_tmp_list ]] && show_list "${is_tmp_list[@]}"
     while :; do
         echo -ne $is_opt_input_msg
-        read REPLY
+        read -r REPLY || { err "未读取到输入，操作已取消。"; return 1; }
         [[ ! $REPLY && $is_emtpy_exit ]] && exit
         [[ ! $REPLY && $is_default_arg ]] && export $is_ask_set=$is_default_arg && break
         [[ "$REPLY" == "${is_str}2${is_get}3${is_opt}3" && $is_ask_set == 'is_main_pick' ]] && {
@@ -315,7 +315,7 @@ create() {
     server)
         local listen_address=::
         is_tls=none
-        get new
+        get new || return 1
         # file name
         if [[ $host ]]; then
             is_config_name=$2-${host}.json
@@ -325,14 +325,20 @@ create() {
         else
             is_config_name=$2-${port}.json
         fi
-        if [[ ! $host && $is_change && $is_ingress_listen && $is_ingress_caddy != true ]]; then
-            listen_address=$is_ingress_listen
+        if [[ ! $host ]]; then
+            if [[ $is_add_listen_resolved ]]; then
+                listen_address=$is_add_listen_resolved
+            elif [[ $is_change && $is_ingress_listen && $is_ingress_caddy != true ]]; then
+                listen_address=$is_ingress_listen
+            fi
         fi
         is_ingress_listen=$listen_address
         is_listen="listen: \"$listen_address\""
         is_json_file=$is_conf_dir/$is_config_name
         # get json
-        [[ $is_change || ! $json_str ]] && get protocol $2
+        if [[ $is_change || ! $json_str ]]; then
+            get protocol "$2" || return 1
+        fi
         [[ $net == "reality" ]] && is_add_public_key=",outbounds:[{type:\"direct\"},{tag:\"public_key_$is_public_key\",type:\"direct\"}]"
         is_new_json=$(jq "{inbounds:[{tag:\"$is_config_name\",type:\"$is_protocol\",$is_listen,listen_port:$port,$json_str}]$is_add_public_key}" <<<{})
         [[ $is_test_json ]] && return # tmp test
@@ -343,6 +349,11 @@ create() {
             msg
             return
         }
+        if [[ ! $is_change && ! $is_new_install && ! $host ]]; then
+            load network.sh
+            network_apply "$is_json_file" "$is_new_json" create || return 1
+            return 0
+        fi
         # del old file
         [[ $is_config_file ]] && is_no_del_msg=1 && del $is_config_file
         # save json to file
@@ -787,6 +798,45 @@ manage() {
 
 # add a config
 add() {
+    local is_add_ingress= is_add_listen= is_add_listen_resolved= is_add_public_ip= is_add_interactive=
+    local has_ingress_option= has_listen_option=
+    local args=()
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+        --ingress | --ingress=*)
+            [[ ! $has_ingress_option ]] || { err "--ingress 不可重复指定。"; return 1; }
+            has_ingress_option=1
+            if [[ $1 == --ingress ]]; then
+                [[ $# -ge 2 && $2 ]] || { err "--ingress 缺少 ipv4、ipv6 或 dual 参数。"; return 1; }
+                is_add_ingress=${2,,}; shift 2
+            else
+                is_add_ingress=${1#*=}; is_add_ingress=${is_add_ingress,,}; shift
+            fi
+            case $is_add_ingress in
+            ipv4 | ipv6 | dual) ;;
+            *) err "--ingress 只支持 ipv4、ipv6 或 dual。"; return 1 ;;
+            esac
+            ;;
+        --listen | --listen=*)
+            [[ ! $has_listen_option ]] || { err "--listen 不可重复指定。"; return 1; }
+            has_listen_option=1
+            if [[ $1 == --listen ]]; then
+                [[ $# -ge 2 && $2 ]] || { err "--listen 缺少 IP 地址。"; return 1; }
+                is_add_listen=$2; shift 2
+            else
+                is_add_listen=${1#*=}; shift
+                [[ $is_add_listen ]] || { err "--listen 缺少 IP 地址。"; return 1; }
+            fi
+            ;;
+        --) shift; args+=("$@"); break ;;
+        --*) err "无法识别添加选项: $1"; return 1 ;;
+        *) args+=("$1"); shift ;;
+        esac
+    done
+    set -- "${args[@]}"
+    if [[ ( ! $1 || $is_main_start ) && ! $is_change && ! $is_new_install && ! $is_gen ]]; then
+        is_add_interactive=1
+    fi
     is_lower=${1,,}
     if [[ $is_lower ]]; then
         case $is_lower in
@@ -899,7 +949,7 @@ add() {
     [[ $1 && ! $is_change ]] && {
         msg "\n使用协议: $is_new_protocol"
         # err msg tips
-        is_err_tips="\n\n请使用: $(_green $is_core add $1 $is_add_opts) 来添加 $is_new_protocol 配置"
+        is_err_tips="\n\n请使用: $(_green $is_core add $1 $is_add_opts) [--ingress ipv4|ipv6|dual] [--listen address] 来添加 $is_new_protocol 配置"
     }
 
     # remove old protocol args
@@ -984,6 +1034,9 @@ add() {
         [[ $is_use_socks_pass ]] && is_socks_pass=$is_use_socks_pass
     fi
 
+    load ingress.sh
+    ingress_prepare_add "$is_add_interactive" || return 1
+
     # anytls with domain (ACME TLS)
     if [[ $is_anytls_domain && ! $is_change && ! $is_gen ]]; then
         get_ip
@@ -1014,7 +1067,7 @@ add() {
         get host-test
     else
         # for main menu start, dont auto create args
-        if [[ $is_main_start ]]; then
+        if [[ $is_main_start || $is_add_interactive ]]; then
 
             # set port
             [[ ! $port ]] && ask string port "请输入端口:"
@@ -1073,10 +1126,14 @@ add() {
     fi
 
     # create json
-    create server $is_new_protocol
+    create server "$is_new_protocol" || return 1
 
     # show config info.
-    info
+    info || return 1
+    if [[ ! $is_gen && ! $host && $is_ingress_listen == "::" ]]; then
+        msg "双栈入口可分别导出链接: $is_core url $is_config_name ipv4 / ipv6"
+    fi
+    return 0
 }
 
 # get config info
@@ -1088,9 +1145,17 @@ get() {
         ingress_addr || return 1
         ;;
     new)
-        [[ ! $host ]] && get_ip
+        if [[ ! $host ]]; then
+            if [[ $is_ingress_listen && $is_ingress_listen != "::" &&
+                  $is_ingress_listen != 0.0.0.0 && $is_ingress_caddy != true ]]; then
+                ip=$is_ingress_listen
+            else
+                get_ip || return 1
+            fi
+        fi
         [[ ! $port ]] && get_port && port=$tmp_port
         [[ ! $uuid ]] && get_uuid && uuid=$tmp_uuid
+        return 0
         ;;
     file)
         is_file_str=$2
@@ -1275,12 +1340,12 @@ get() {
         [[ $is_no_auto_tls || $is_gen || $is_dont_test_host ]] && return
         get_ip
         get ping
-        if [[ ! $(grep $ip <<<$is_host_dns) ]]; then
+        if ! ingress_dns_matches "$is_host_dns" "$ip"; then
             msg "\n请将 ($(_red_bg $host)) 解析到 ($(_red_bg $ip))"
             msg "\n如果使用 Cloudflare, 在 DNS 那; 关闭 (Proxy status / 代理状态), 即是 (DNS only / 仅限 DNS)"
             ask string y "我已经确定解析 [y]:"
             get ping
-            if [[ ! $(grep $ip <<<$is_host_dns) ]]; then
+            if ! ingress_dns_matches "$is_host_dns" "$ip"; then
                 _cyan "\n测试结果: $is_host_dns"
                 err "域名 ($host) 没有解析到 ($ip)"
             fi
@@ -1680,7 +1745,7 @@ main() {
     a | add | gen | no-auto-tls)
         [[ $1 == 'gen' ]] && is_gen=1
         [[ $1 == 'no-auto-tls' ]] && is_no_auto_tls=1
-        add ${@:2}
+        add "${@:2}"
         ;;
     bin | pbk | check | completion | format | generate | geoip | geosite | merge | rule-set | run | tools)
         is_run_command=$1

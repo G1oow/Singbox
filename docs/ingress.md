@@ -8,7 +8,40 @@ IPv4 客户端 ── IPv4 入口 ──┐
 IPv6 客户端 ── IPv6 入口 ──┘
 ```
 
-## 切换一个节点的入口
+## 添加配置时选择入口
+
+菜单：`sing-box` → **添加配置** → 选择协议 → **IPv4入口 / IPv6入口 / 双栈入口**。
+选择 IPv6 时，可直接输入已分配的 IPv6 地址，或按回车自动检测；然后继续填写端口和凭证。
+`sing-box add` 不带协议时也会进入同样的交互流程。
+
+也可用一条命令创建，不必先添加再切换：
+
+```bash
+sing-box add reality --ingress ipv6
+sing-box add socks 30001 user1 password1 --ingress ipv4
+sing-box add socks 30002 user2 password2 --ingress ipv6
+sing-box add socks 30003 user3 password3 --ingress dual
+sing-box add socks 30004 user4 password4 --ingress ipv6 --listen 2001:db8::2
+```
+
+请替换示例密码和 IPv6 地址。入口选项可放在协议参数之前或之后，也接受 `--ingress=ipv6`。
+`--listen` 需配合 `--ingress ipv4` 或 `ipv6` 使用；IPv4 省略时监听 `0.0.0.0`，IPv6 省略时自动检测。
+指定 IPv6 时不会先探测 IPv4，IPv6-only VPS 也能创建节点；完成后立即显示对应的 IPv6 链接。
+未传入口选项的旧式命令继续使用双栈，默认首次安装也维持双栈，不额外插入交互。
+AnyTLS 域名证书节点会按 IPv6 检查 AAAA 记录，兼容压缩、展开和大小写不同的 IPv6 写法。
+IPv6-only VPS 的目标网站及 REALITY 握手目标仍需具备可用 IPv6；入口选择不会额外提供 IPv4 出口。
+
+新建直连入口会先校验主配置及全部节点，再原子创建配置；重名时拒绝覆盖。
+若重启失败，只撤销本次新节点并恢复原服务，不清除其他节点或出口策略。
+反代型 `*-TLS` 协议不接受入口选项，其公网 IPv4 / IPv6 由 Caddy 或外部反代管理，脚本会明确提示。
+
+离线生成配置也支持入口参数；IPv6 必须提供显式地址，不进行本机地址分配检查或网络探测：
+
+```bash
+sing-box gen socks 30002 user2 password2 --ingress ipv6 --listen 2001:db8::2
+```
+
+## 切换已有节点的入口
 
 ```bash
 sing-box ingress status                         # 列出各节点的监听策略
@@ -45,11 +78,11 @@ sing-box egress ipv6
 
 ### 方式二：两个独立配置
 
-先用 `sing-box add` 创建两个节点，再分别设置入口：
+直接创建两个使用不同入口的节点，然后设置一次共用出口：
 
 ```bash
-sing-box ingress ipv4 Socks-30001.json
-sing-box ingress ipv6 Socks-30002.json
+sing-box add socks 30001 user1 password1 --ingress ipv4
+sing-box add socks 30002 user2 password2 --ingress ipv6
 sing-box egress ipv4
 ```
 
@@ -79,7 +112,7 @@ sing-box egress ipv4
 
 ## 验证
 
-`bash tests/egress.sh` 会同时运行出口与入口回归测试。
+`bash tests/egress.sh` 会同时运行出口、入口和添加配置回归测试。
 可使用 `SING_BOX_BIN=/path/to/sing-box bash tests/ingress.sh` 调用真实内核；
 本机有 Node.js 时，还会建立隔离的 loopback SOCKS、HTTP 和 DNS 服务，验证：
 
