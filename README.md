@@ -27,6 +27,31 @@
 - 一键更改 (端口/UUID/密码/域名/路径/加密方式/SNI/等...)
 - 还有更多...
 
+# 一键安装
+
+仓库公开后，可使用下面的命令安装最新稳定版，**无需 GitHub CLI 或 Token**。
+如果仓库仍为私有，请使用[认证安装方式](docs/release.md)。
+
+**仅用于新 VPS，以 root 执行。** 系统需已安装 Bash、curl、tar、gzip 和 sha256sum。
+安装会配置代理服务；已有安装请勿重复运行，原上游脚本请先按[迁移说明](docs/release.md#从原上游脚本迁移)切换。
+
+```bash
+bash -c 'set -e; workdir=$(mktemp -d); cd "$workdir"; release_url=https://github.com/G1oow/Singbox/releases/latest/download; curl -fsSL --retry 3 "$release_url/code.tar.gz" -o code.tar.gz; curl -fsSL --retry 3 "$release_url/sha256sums.txt" -o sha256sums.txt; sha256sum -c sha256sums.txt; mkdir source; tar -xzf code.tar.gz -C source; cd source; bash install.sh --local-install'
+```
+
+命令会下载发布包、校验 SHA256，再从独立源码目录安装；任一步骤失败都会停止。
+
+# 快速开始
+
+安装完成后，运行以下命令打开管理菜单：
+
+```bash
+sing-box
+```
+
+使用 `sing-box help` 查看命令；已安装本分支时，使用 `sing-box update sh` 更新脚本。
+更多说明：[IPv4 / IPv6 出口策略](docs/egress.md) · [安装、迁移与自动发布](docs/release.md)。
+
 # 设计理念
 
 设计理念为：**高效率，超快速，极易用**
