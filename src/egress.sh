@@ -66,38 +66,10 @@ egress_config() {
     ' "$config"
 }
 
-egress_restart() {
-    if [[ $is_systemd ]]; then
-        systemctl restart "$is_core" && systemctl is-active --quiet "$is_core"
-    elif [[ $is_openrc ]]; then
-        rc-service "$is_core" restart && rc-service "$is_core" status
-    else
-        warn "未找到 systemd 或 OpenRC，无法应用网络配置。"
-        return 1
-    fi
+egress_apply() {
+    load network.sh
+    network_apply "$is_config_json" "$1"
 }
-
-# DNS 与出口策略共用事务入口，避免校验失败时覆盖有效配置。
-egress_apply() (
-    local candidate backup="${is_config_json}.network.bak"
-    candidate=$(mktemp "${is_config_json}.network.XXXXXX") || return 1
-    trap 'rm -f -- "$candidate"' EXIT
-    cp -p "$is_config_json" "$candidate" && printf '%s\n' "$1" >"$candidate" || return 1
-    if ! "$is_core_bin" check -c "$candidate" -C "$is_conf_dir"; then
-        err "配置校验失败，原配置未修改。"
-        return 1
-    fi
-    cp -p "$is_config_json" "$backup" && mv -f "$candidate" "$is_config_json" || return 1
-    if ! egress_restart; then
-        if cp -p "$backup" "$candidate" && mv -f "$candidate" "$is_config_json"; then
-            warn "重启失败，已恢复原配置，正在尝试恢复服务。"
-            egress_restart || warn "服务仍未恢复，请检查 sing-box 日志。"
-        else
-            warn "自动恢复失败，请使用备份恢复: $backup"
-        fi
-        return 1
-    fi
-)
 
 egress_set() {
     local strategy=${1,,} config
