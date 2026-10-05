@@ -39,17 +39,30 @@ gh repo view G1oow/Singbox
 Git SSH 登录与 Release API 登录不同，仅配置 SSH Key 不足以下载私有 Release。
 以后仓库若由所有者改为公开，未登录 gh 时可以自动使用 wget，不需修改脚本。
 
-## 新 VPS 安装
+## 一键安装（新 VPS）
 
-认证后下载发布包：
+前提：以 **root** 运行，已安装 GitHub CLI，并完成上面的仓库认证。
+复制下面整行即可下载最新稳定版、校验完整性并安装：
+
+```bash
+bash -c 'set -e; workdir=$(mktemp -d); GH_HOST=github.com gh release download -R G1oow/Singbox -p code.tar.gz -p sha256sums.txt -D "$workdir"; cd "$workdir"; sha256sum -c sha256sums.txt; mkdir source; tar -xzf code.tar.gz -C source; cd source; bash install.sh --local-install'
+```
+
+任一步骤失败都会中止，不会在下载或校验失败后继续安装。
+下载文件与安装源码分开存放，避免把压缩包复制进脚本安装目录。
+已经安装本分支时使用 `sing-box update sh`，不要重复安装。
+
+同等操作的多行版本：
 
 ```bash
 workdir=$(mktemp -d)
-gh release download --repo G1oow/Singbox \
+GH_HOST=github.com gh release download --repo G1oow/Singbox \
   --pattern code.tar.gz --pattern sha256sums.txt --dir "$workdir"
 cd "$workdir"
 sha256sum -c sha256sums.txt
-tar -xzf code.tar.gz
+mkdir source
+tar -xzf code.tar.gz -C source
+cd source
 bash install.sh --local-install
 ```
 

@@ -45,7 +45,7 @@ sing-box 1.12 及以上使用 `domain_resolver.strategy`，旧版本使用 `doma
 ## 从此仓库安装
 
 仓库：<https://github.com/G1oow/Singbox>。私有仓库需要先使用 GitHub CLI 认证，
-安装及迁移步骤见 [构建、发布与更新](release.md)。已具备仓库读取权限时也可本地安装：
+一键安装命令及迁移步骤见 [构建、发布与更新](release.md)。已具备仓库读取权限时也可本地安装：
 
 ```bash
 gh repo clone G1oow/Singbox
