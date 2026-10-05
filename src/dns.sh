@@ -8,6 +8,8 @@ is_dns_list=(
     none
 )
 dns_set() {
+    local strategy config
+    is_dns_new=
     if [[ $(echo -e "1.11.99\n$is_core_ver" | sort -V | head -n1) == '1.11.99' ]]; then
         is_dns_new=1
     fi
@@ -50,17 +52,23 @@ dns_set() {
         fi
     fi
     is_dns_use_bak=$is_dns_use
+    load egress.sh
+    strategy=$(egress_current "$is_config_json") || return 1
     if [[ $is_dns_use == "none" ]]; then
-        cat <<<$(jq '.|.dns={}|del(.route.default_domain_resolver)' $is_config_json) >$is_config_json
+        config=$(jq '.dns={}|del(.route.default_domain_resolver)' "$is_config_json") || return 1
     else
         if [[ $is_dns_new ]]; then
             dns_set_server $is_dns_use
-            cat <<<$(jq '.|.dns.servers=[{tag:"dns",type:"'$is_dns_type'",server:"'$is_dns_use'",domain_resolver:"local"},{tag:"local",type:"local"}]|.route.default_domain_resolver="dns"' $is_config_json) >$is_config_json
+            config=$(jq --arg type "$is_dns_type" --arg server "$is_dns_use" \
+                '.dns.servers=[{tag:"dns",type:$type,server:$server,domain_resolver:"local"},{tag:"local",type:"local"}]
+                 |.route.default_domain_resolver="dns"' "$is_config_json") || return 1
         else
-            cat <<<$(jq '.dns.servers=[{address:"'$is_dns_use'",address_resolver:"local"},{tag:"local",address:"local"}]' $is_config_json) >$is_config_json
+            config=$(jq --arg server "$is_dns_use" \
+                '.dns.servers=[{address:$server,address_resolver:"local"},{tag:"local",address:"local"}]' "$is_config_json") || return 1
         fi
     fi
-    manage restart &
+    config=$(egress_config "$strategy" - refresh <<<"$config") || return 1
+    egress_apply "$config" || return 1
     msg "\n已更新 DNS 为: $(_green $is_dns_use_bak)\n"
 }
 dns_set_server() {

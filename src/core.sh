@@ -158,17 +158,12 @@ get_pbk() {
 }
 
 show_list() {
-    PS3=''
-    COLUMNS=1
-    select i in "$@"; do echo; done &
-    wait
-    # i=0
-    # for v in "$@"; do
-    #     ((i++))
-    #     echo "$i) $v"
-    # done
-    # echo
-
+    local index=1 item
+    for item in "$@"; do
+        printf '%s) %s\n' "$index" "$item"
+        index=$((index + 1))
+    done
+    echo
 }
 
 is_test() {
@@ -1580,7 +1575,7 @@ update() {
     if [[ $is_new_ver ]]; then
         msg "\n使用自定义版本更新 $is_show_name: $(_green $is_new_ver)\n"
     else
-        get_latest_version $is_update_name
+        get_latest_version "$is_update_name" || return 1
         [[ $is_run_ver == $latest_ver ]] && {
             msg "\n$is_show_name 当前已经是最新版本了.\n"
             exit
@@ -1588,7 +1583,7 @@ update() {
         msg "\n发现 $is_show_name 新版本: $(_green $latest_ver)\n"
         is_new_ver=$latest_ver
     fi
-    download $is_update_name $is_new_ver
+    download "$is_update_name" "$is_new_ver" || return 1
     msg "更新成功, 当前 $is_show_name 版本: $(_green $is_new_ver)\n"
     msg "$(_green 请查看更新说明: https://github.com/$is_update_repo/releases/tag/$is_new_ver)\n"
     [[ $is_update_name != 'sh' ]] && manage restart $is_update_name &
@@ -1634,7 +1629,7 @@ is_main_menu() {
         show_help
         ;;
     9)
-        ask list is_do_other "启用BBR 查看日志 测试运行 重装脚本 设置DNS"
+        ask list is_do_other "启用BBR 查看日志 测试运行 重装脚本 设置DNS 设置出口策略"
         case $REPLY in
         1)
             load bbr.sh
@@ -1653,6 +1648,10 @@ is_main_menu() {
         5)
             load dns.sh
             dns_set
+            ;;
+        6)
+            load egress.sh
+            egress_set
             ;;
         esac
         ;;
@@ -1730,6 +1729,10 @@ main() {
     dns)
         load dns.sh
         dns_set ${@:2}
+        ;;
+    egress)
+        load egress.sh
+        egress_set "${@:2}"
         ;;
     debug)
         is_debug=1

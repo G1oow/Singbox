@@ -41,6 +41,7 @@ show_help() {
             "   web [name] [domain]                             更改伪装网站\n"
             "进阶:"
             "   dns [...]                                       设置 DNS"
+            "   egress [ipv4|ipv6|ipv4-only|ipv6-only|auto|status] 设置默认 direct 出口策略"
             "   dd, ddel [name...]                              删除多个配置**"
             "   fix [name]                                      修复一个配置"
             "   fix-all                                         修复全部配置"

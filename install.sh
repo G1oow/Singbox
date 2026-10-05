@@ -70,7 +70,8 @@ is_conf_dir=$is_core_dir/conf
 is_log_dir=/var/log/$is_core
 is_sh_bin=/usr/local/bin/$is_core
 is_sh_dir=$is_core_dir/sh
-is_sh_repo=$author/$is_core
+# 脚本使用本仓库发布包；内核仍使用 SagerNet 官方发行版。
+is_sh_repo=G1oow/Singbox
 is_pkg="wget tar bash"
 # Alpine: gcompat provides glibc compatibility for prebuilt binaries
 [[ $cmd =~ apk ]] && is_pkg="$is_pkg gcompat jq"
@@ -190,6 +191,17 @@ download() {
         ;;
     esac
 
+    # 私有仓库使用 gh 处理认证和重定向，避免自行转发令牌到下载域名。
+    if [[ $1 == sh ]] && command -v gh &>/dev/null && GH_HOST=github.com gh auth status --hostname github.com &>/dev/null; then
+        msg warn "通过 GitHub CLI 下载 ${name}"
+        if GH_HOST=github.com gh release download --repo "$is_sh_repo" --pattern code.tar.gz --output "$tmpfile"; then
+            mv -f "$tmpfile" "$is_ok"
+        else
+            return 1
+        fi
+        return
+    fi
+
     [[ $link ]] && {
         msg warn "下载 ${name} > ${link}"
         if _wget -t 3 -q -c $link -O $tmpfile; then
@@ -225,6 +237,7 @@ check_status() {
         }
         [[ ! -f $is_sh_ok ]] && {
             msg err "下载 ${is_core_name} 脚本失败"
+            msg err "私有仓库请先安装 GitHub CLI，并以当前用户执行 gh auth login --hostname github.com"
             is_fail=1
         }
         [[ ! -f $is_jq_ok ]] && {

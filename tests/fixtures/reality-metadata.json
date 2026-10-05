@@ -1,0 +1,11 @@
+{
+  "outbounds": [
+    {
+      "type": "direct"
+    },
+    {
+      "tag": "public_key_test",
+      "type": "direct"
+    }
+  ]
+}

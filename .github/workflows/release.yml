@@ -1,31 +1,134 @@
-name: Main
+name: 测试、构建与发布
 
-on: push
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
 
+# PR 仅有读取权限，不运行 pull_request_target，不访问发布凭证。
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  build:
+  test:
+    name: 内核兼容性 ${{ matrix.core }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        core: ["1.11.4", "1.12.12", "1.13.14"]
     steps:
-      - name: checkout
-        uses: actions/checkout@v3
+      - name: 检出代码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
-      - name: get ver
+          persist-credentials: false
+      - name: 检查 Bash 语法
         run: |
-          echo "$(cat *.sh | grep is_sh_ver=)" >> $GITHUB_ENV
-          echo "old=$(git tag | tail -n1)" >> $GITHUB_ENV
-      # - name: test
-      #   if: env.is_sh_ver == env.old 
-      #   run: |
-      #     echo not found new version.
-      #     exit 1
-      - name: tar
-        run: tar zcvf code.tar.gz ./*
-      - name: release
-        uses: softprops/action-gh-release@v1
+          for file in install.sh sing-box.sh src/*.sh scripts/*.sh tests/*.sh; do
+            bash -n "$file"
+          done
+      - name: 下载官方内核
+        env:
+          CORE_VERSION: ${{ matrix.core }}
+        run: |
+          archive="sing-box-${CORE_VERSION}-linux-amd64.tar.gz"
+          curl --fail --location --retry 3 \
+            "https://github.com/SagerNet/sing-box/releases/download/v${CORE_VERSION}/${archive}" \
+            --output "$RUNNER_TEMP/core.tar.gz"
+          mkdir "$RUNNER_TEMP/core"
+          tar -xzf "$RUNNER_TEMP/core.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/core"
+      - name: 出口策略和真实内核校验
+        env:
+          SING_BOX_BIN: ${{ runner.temp }}/core/sing-box
+        run: bash tests/egress.sh
+      - name: 发布与下载回归测试
+        run: bash tests/release.sh
+
+  build:
+    name: 构建脚本发布包
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          files: code.tar.gz
-          tag_name: ${{ env.is_sh_ver }}
+          persist-credentials: false
+      - name: 生成唯一构建版本
+        id: version
+        run: |
+          base=$(sed -n 's/^is_sh_ver=//p' sing-box.sh)
+          [[ "$base" =~ ^v[0-9]+\.[0-9]+$ ]]
+          echo "version=${base}.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+      - name: 打包并检查版本
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          bash scripts/package.sh "$VERSION" "$RUNNER_TEMP/package"
+          tar -xOf "$RUNNER_TEMP/package/code.tar.gz" sing-box.sh | grep -Fx "is_sh_ver=$VERSION"
+          cd "$RUNNER_TEMP/package"
+          sha256sum -c sha256sums.txt
+      - name: 保存 PR 或主分支构建产物
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: singbox-${{ steps.version.outputs.version }}
+          path: |
+            ${{ runner.temp }}/package/code.tar.gz
+            ${{ runner.temp }}/package/sha256sums.txt
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  release:
+    name: 发布主分支稳定版
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: 下载已测试的发布包
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: singbox-${{ needs.build.outputs.version }}
+      - name: 发布 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          sha256sum -c sha256sums.txt
+          # 防止较早排队的构建覆盖更新提交的 latest。
+          head_sha=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
+          if [[ "$head_sha" != "$GITHUB_SHA" ]]; then
+            echo "主分支已有更新提交，本次只保留构建产物。"
+            exit 0
+          fi
+          printf '提交：%s\n\n更新命令：`sing-box update sh`\n\n私有仓库需先以运行脚本的用户完成 `gh auth login --hostname github.com`。\n' \
+            "$GITHUB_SHA" > release-notes.md
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            target=$(gh release view "$VERSION" --json targetCommitish --jq .targetCommitish)
+            [[ "$target" == "$GITHUB_SHA" ]]
+            gh release upload "$VERSION" code.tar.gz sha256sums.txt --clobber
+          else
+            gh release create "$VERSION" code.tar.gz sha256sums.txt \
+              --target "$GITHUB_SHA" --title "脚本构建 $VERSION" \
+              --notes-file release-notes.md --draft
+          fi
+          gh release edit "$VERSION" --draft=false --latest
