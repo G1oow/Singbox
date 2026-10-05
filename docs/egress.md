@@ -26,6 +26,9 @@ sing-box egress             # 交互选择
 - IPv6 优先需要 VPS 有可用的公网 IPv6 路由；目标网站也需提供 IPv6 地址。优先策略允许回退，实际出口不保证始终是指定地址族。
 - IPv4 入站可以使用 IPv6 出口，反之亦然；二者不是同一个设置。
 
+需要控制节点的 IPv4 / IPv6 入口、导出双入口链接时，参见[入口策略](ingress.md)。
+多个入口默认共用这里设置的 `direct` 出口，不需要为每个入口重复设置出口。
+
 ## DNS 与版本兼容
 
 sing-box 1.12 及以上使用 `domain_resolver.strategy`，旧版本使用 `domain_strategy`。

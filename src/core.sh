@@ -136,7 +136,9 @@ get_ip() {
     [[ ! $ip ]] && export "$(_wget -6 -qO- https://one.one.one.one/cdn-cgi/trace | grep ip=)" &>/dev/null
     [[ ! $ip ]] && {
         err "获取服务器 IP 失败.."
+        return 1
     }
+    return 0
 }
 
 get_port() {
@@ -311,19 +313,23 @@ ask() {
 create() {
     case $1 in
     server)
+        local listen_address=::
         is_tls=none
         get new
-        # listen
-        is_listen='listen: "::"'
         # file name
         if [[ $host ]]; then
             is_config_name=$2-${host}.json
-            is_listen='listen: "127.0.0.1"'
+            listen_address=127.0.0.1
         elif [[ $is_anytls_domain ]]; then
             is_config_name=$2-${is_anytls_domain}.json
         else
             is_config_name=$2-${port}.json
         fi
+        if [[ ! $host && $is_change && $is_ingress_listen && $is_ingress_caddy != true ]]; then
+            listen_address=$is_ingress_listen
+        fi
+        is_ingress_listen=$listen_address
+        is_listen="listen: \"$listen_address\""
         is_json_file=$is_conf_dir/$is_config_name
         # get json
         [[ $is_change || ! $json_str ]] && get protocol $2
@@ -1078,12 +1084,8 @@ add() {
 get() {
     case $1 in
     addr)
-        is_addr=$host
-        [[ ! $is_addr ]] && {
-            get_ip
-            is_addr=$ip
-            [[ $(grep ":" <<<$ip) ]] && is_addr="[$ip]"
-        }
+        load ingress.sh
+        ingress_addr || return 1
         ;;
     new)
         [[ ! $host ]] && get_ip
@@ -1094,25 +1096,28 @@ get() {
         is_file_str=$2
         [[ ! $is_file_str ]] && is_file_str='.json$'
         # is_all_json=("$(ls $is_conf_dir | grep -E $is_file_str)")
-        readarray -t is_all_json <<<"$(ls $is_conf_dir | grep -E -i "$is_file_str" | sed '/dynamic-port-.*-link/d' | head -233)" # limit max 233 lines for show.
+        readarray -t is_all_json <<<"$(ls "$is_conf_dir" | grep -E '\.json$' | grep -E -i "$is_file_str" | sed '/dynamic-port-.*-link/d' | head -233)" # limit max 233 lines for show.
         [[ ! $is_all_json ]] && err "无法找到相关的配置文件: $2"
         [[ ${#is_all_json[@]} -eq 1 ]] && is_config_file=$is_all_json && is_auto_get_config=1
         [[ ! $is_config_file ]] && {
             [[ $is_dont_auto_exit ]] && return
             ask get_config_file
         }
+        return 0
         ;;
     info)
         get file $2
         if [[ $is_config_file ]]; then
             is_json_str=$(cat $is_conf_dir/"$is_config_file" | sed s#//.*##)
+            is_ingress_listen=$(jq -r '.inbounds[0].listen // "::"' <<<"$is_json_str")
+            is_ingress_caddy=$(jq -r '.inbounds[0] | .listen == "127.0.0.1" and (.transport.headers.host // "") != ""' <<<"$is_json_str")
             is_json_data=$(jq '(.inbounds[0]|.type,.listen_port,(.users[0]|.uuid,.password,.username),.method,.password,.override_port,.override_address,(.transport|.type,.path,.headers.host),(.tls|.server_name,.reality.private_key)),(.outbounds[1].tag)' <<<$is_json_str)
             [[ $? != 0 ]] && err "无法读取此文件: $is_config_file"
             is_up_var_set=(null is_protocol port uuid password username ss_method ss_password door_port door_addr net_type path host is_servername is_private_key is_public_key)
             [[ $is_debug ]] && msg "\n------------- debug: $is_config_file -------------"
             i=0
             for v in $(sed 's/""/null/g;s/"//g' <<<"$is_json_data"); do
-                ((i++))
+                i=$((i + 1))
                 [[ $is_debug ]] && msg "$i-${is_up_var_set[$i]}: $v"
                 export ${is_up_var_set[$i]}="${v}"
             done
@@ -1143,11 +1148,11 @@ get() {
             fi
             [[ $is_tmp_https_port ]] && is_https_port=$is_tmp_https_port
             [[ $is_client && $host ]] && port=$is_https_port
-            get protocol $is_protocol-$net_type
+            get protocol $is_protocol-$net_type || return 1
         fi
         ;;
     protocol)
-        get addr # get host or server ip
+        get addr || return 1 # get host or server ip
         is_lower=${2,,}
         net=
         is_users="users:[{uuid:\"$uuid\"}]"
@@ -1352,7 +1357,7 @@ get() {
 # show info
 info() {
     if [[ ! $is_protocol ]]; then
-        get info $1
+        get info "$1" || return 1
     fi
     # is_color=$(shuf -i 41-45 -n1)
     is_color=44
@@ -1394,7 +1399,7 @@ info() {
                 is_info_str+=(tls h3 true)
                 is_quic_add=",tls:\"tls\",alpn:\"h3\"" # cant add allowInsecure
             }
-            is_vmess_url=$(jq -c "{v:2,ps:\"233boy-${net}-$is_addr\",add:\"$is_addr\",port:\"$port\",id:\"$uuid\",aid:\"0\",net:\"$net\",type:\"$is_type\"$is_quic_add}" <<<{})
+            is_vmess_url=$(jq -c "{v:2,ps:\"233boy-${net}-$is_addr\",add:\"$is_addr_host\",port:\"$port\",id:\"$uuid\",aid:\"0\",net:\"$net\",type:\"$is_type\"$is_quic_add}" <<<{})
             is_url=vmess://$(echo -n $is_vmess_url | base64 -w 0)
         fi
         ;;
@@ -1444,8 +1449,8 @@ info() {
         is_can_change=(0 1 4)
         if [[ $is_anytls_domain ]]; then
             is_info_show=(0 1 2 10 8)
-            is_info_str=($is_protocol $is_anytls_domain $port $password tls)
-            is_url="anytls://$password@$is_anytls_domain:$port#233boy-$net-$is_anytls_domain"
+            is_info_str=($is_protocol $is_addr $port $password tls)
+            is_url="anytls://$password@$is_addr:$port?sni=$is_anytls_domain#233boy-$net-$is_addr"
         else
             is_insecure=1
             is_info_show=(0 1 2 10 8 20)
@@ -1467,6 +1472,7 @@ info() {
     esac
     [[ $is_dont_show_info || $is_gen || $is_dont_auto_exit ]] && return # dont show info
     msg "-------------- $is_config_name -------------"
+    [[ ! $is_ingress_listen ]] || msg "入口监听 (listen) = $is_ingress_listen"
     for ((i = 0; i < ${#is_info_show[@]}; i++)); do
         a=${info_list[${is_info_show[$i]}]}
         if [[ ${#a} -eq 11 || ${#a} -ge 13 ]]; then
@@ -1510,8 +1516,10 @@ footer_msg() {
 
 # URL or qrcode
 url_qr() {
+    local is_address_family=${3,,}
+    [[ $# -le 3 ]] || { err "用法: $is_core $1 [name] [ipv4|ipv6]"; return 1; }
     is_dont_show_info=1
-    info $2
+    info "$2" || return 1
     if [[ $is_url ]]; then
         [[ $1 == 'url' ]] && {
             msg "\n------------- $is_config_name & URL 链接 -------------"
@@ -1629,7 +1637,7 @@ is_main_menu() {
         show_help
         ;;
     9)
-        ask list is_do_other "启用BBR 查看日志 测试运行 重装脚本 设置DNS 设置出口策略"
+        ask list is_do_other "启用BBR 查看日志 测试运行 重装脚本 设置DNS 设置出口策略 设置入口策略"
         case $REPLY in
         1)
             load bbr.sh
@@ -1652,6 +1660,10 @@ is_main_menu() {
         6)
             load egress.sh
             egress_set
+            ;;
+        7)
+            load ingress.sh
+            ingress_set
             ;;
         esac
         ;;
@@ -1733,6 +1745,10 @@ main() {
     egress)
         load egress.sh
         egress_set "${@:2}"
+        ;;
+    ingress)
+        load ingress.sh
+        ingress_set "${@:2}"
         ;;
     debug)
         is_debug=1
