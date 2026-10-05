@@ -36,6 +36,7 @@ load() {
 err() { printf '%s\n' "$*" >&2; exit 1; }
 warn() { printf '%s\n' "$*" >&2; }
 _green() { printf '%s\n' "$*"; }
+sleep() { return 0; }
 load core.sh
 load ingress.sh
 get_uuid() { tmp_uuid=00000000-0000-4000-8000-000000000001; }
