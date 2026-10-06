@@ -72,7 +72,8 @@ is_sh_bin=/usr/local/bin/$is_core
 is_sh_dir=$is_core_dir/sh
 # 脚本使用本仓库发布包；内核仍使用 SagerNet 官方发行版。
 is_sh_repo=G1oow/Singbox
-is_pkg="wget tar bash"
+is_pkg="wget tar gzip bash ca-certificates"
+command -v sha256sum &>/dev/null || is_pkg="$is_pkg coreutils"
 # Alpine: gcompat provides glibc compatibility for prebuilt binaries
 [[ $cmd =~ apk ]] && is_pkg="$is_pkg gcompat jq"
 is_config_json=$is_core_dir/config.json
@@ -86,26 +87,53 @@ tmp_var_lists=(
     is_pkg_ok
 )
 
-# tmp dir
-tmpdir=$(mktemp -u)
-[[ ! $tmpdir ]] && {
-    tmpdir=/tmp/tmp-$RANDOM
-}
-
-# set up var
-for i in ${tmp_var_lists[*]}; do
-    export $i=$tmpdir/$i
-done
+tmpdir=
 
 # load bash script.
 load() {
-    . $is_sh_dir/src/$1
+    . "$is_sh_dir/src/$1"
 }
 
-# wget add --no-check-certificate
+# 保留 HTTPS 证书校验，缺少 CA 时先修复系统依赖。
 _wget() {
     [[ $proxy ]] && export https_proxy=$proxy
-    wget --no-check-certificate $*
+    wget -T 20 "$@"
+}
+
+# 安装器可以独立下载运行，因此加载发布包代码前自行校验其摘要和路径。
+install_verify() {
+    local archive=$1 manifest=$2 asset=$3 digest file expected= actual
+    while read -r digest file; do
+        [[ ${file#\*} == "$asset" ]] || continue
+        [[ ! $expected && $digest =~ ^[[:xdigit:]]{64}$ ]] || return 1
+        expected=${digest,,}
+    done <"$manifest"
+    actual=$(sha256sum "$archive") || return 1
+    [[ $expected && ${actual%% *} == "$expected" ]]
+}
+
+install_unpack() {
+    local archive=$1 destination=$2 entry listing
+    listing=$(tar -tzf "$archive") || return 1
+    while IFS= read -r entry; do
+        case $entry in
+        /* | .. | ../* | */../* | */..) return 1 ;;
+        esac
+    done <<<"$listing"
+    listing=$(LC_ALL=C tar -tvzf "$archive") || return 1
+    while IFS= read -r entry; do
+        [[ $entry == [-d]* ]] || return 1
+    done <<<"$listing"
+    tar -xzf "$archive" --no-same-owner --no-same-permissions -C "$destination"
+}
+
+install_cleanup() {
+    local result=$? pid
+    for pid in $(jobs -pr); do kill "$pid" 2>/dev/null || :; done
+    wait 2>/dev/null || :
+    [[ $tmpdir == "$install_temp_root"/singbox-install.* && -d $tmpdir && ! -L $tmpdir ]] &&
+        rm -rf -- "$tmpdir"
+    return "$result"
 }
 
 # print a mesage
@@ -169,19 +197,43 @@ install_pkg() {
 
 # download file
 download() {
+    local link name tmpfile is_ok version base metadata authenticated=
     case $1 in
     core)
-        [[ ! $is_core_ver ]] && is_core_ver=$(_wget -qO- "https://api.github.com/repos/${is_core_repo}/releases/latest?v=$RANDOM" | grep tag_name | grep -E -o 'v([0-9.]+)')
-        [[ $is_core_ver ]] && link="https://github.com/${is_core_repo}/releases/download/${is_core_ver}/${is_core}-${is_core_ver:1}-linux-${is_arch}.tar.gz"
+        metadata=https://api.github.com/repos/$is_core_repo/releases/latest
+        [[ ! $is_core_ver ]] || metadata=https://api.github.com/repos/$is_core_repo/releases/tags/$is_core_ver
+        _wget -t 3 -q "$metadata" -O "$tmpdir/core-release.json" || return 1
+        version=$(sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' "$tmpdir/core-release.json")
+        [[ $version =~ ^v[0-9]+(\.[0-9]+)+$ ]] || return 1
+        printf '%s\n' "$version" >"$tmpdir/core.version" || return 1
+        link="https://github.com/${is_core_repo}/releases/download/${version}/${is_core}-${version#v}-linux-${is_arch}.tar.gz"
         name=$is_core_name
         tmpfile=$tmpcore
         is_ok=$is_core_ok
         ;;
     sh)
-        link=https://github.com/${is_sh_repo}/releases/latest/download/code.tar.gz
-        name="$is_core_name 脚本"
-        tmpfile=$tmpsh
-        is_ok=$is_sh_ok
+        mkdir "$tmpdir/sh-download" || return 1
+        if command -v gh &>/dev/null && GH_HOST=github.com gh auth status --hostname github.com &>/dev/null; then
+            authenticated=1
+            version=$(GH_HOST=github.com gh release view --repo "$is_sh_repo" --json tagName --jq .tagName) || return 1
+        else
+            metadata=$(_wget -t 3 -qO- "https://api.github.com/repos/$is_sh_repo/releases/latest") || return 1
+            version=$(sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' <<<"$metadata")
+        fi
+        [[ $version =~ ^v[0-9]+(\.[0-9]+)+$ ]] || return 1
+        printf '%s\n' "$version" >"$tmpdir/sh.version" || return 1
+        base=https://github.com/$is_sh_repo/releases/download/$version
+        if [[ $authenticated ]]; then
+            GH_HOST=github.com gh release download "$version" --repo "$is_sh_repo" \
+                --pattern code.tar.gz --pattern sha256sums.txt --dir "$tmpdir/sh-download" || return 1
+        else
+            _wget -t 3 -q "$base/code.tar.gz" -O "$tmpdir/sh-download/code.tar.gz" || return 1
+            _wget -t 3 -q "$base/sha256sums.txt" -O "$tmpdir/sh-download/sha256sums.txt" || return 1
+        fi
+        install_verify "$tmpdir/sh-download/code.tar.gz" "$tmpdir/sh-download/sha256sums.txt" code.tar.gz ||
+            { msg err "脚本发布包 SHA256 校验失败"; return 1; }
+        mv -f "$tmpdir/sh-download/code.tar.gz" "$is_sh_ok"
+        return
         ;;
     jq)
         link=https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-$is_arch
@@ -191,29 +243,23 @@ download() {
         ;;
     esac
 
-    # 私有仓库使用 gh 处理认证和重定向，避免自行转发令牌到下载域名。
-    if [[ $1 == sh ]] && command -v gh &>/dev/null && GH_HOST=github.com gh auth status --hostname github.com &>/dev/null; then
-        msg warn "通过 GitHub CLI 下载 ${name}"
-        if GH_HOST=github.com gh release download --repo "$is_sh_repo" --pattern code.tar.gz --output "$tmpfile"; then
-            mv -f "$tmpfile" "$is_ok"
-        else
-            return 1
-        fi
-        return
+    [[ $link ]] || return 1
+    msg warn "下载 ${name} > ${link}"
+    _wget -t 3 -q "$link" -O "$tmpfile" || return 1
+    if [[ $1 == jq ]]; then
+        _wget -t 3 -q https://github.com/jqlang/jq/releases/download/jq-1.7.1/sha256sum.txt \
+            -O "$tmpdir/jq.sha256" || return 1
+        install_verify "$tmpfile" "$tmpdir/jq.sha256" "jq-linux-$is_arch" ||
+            { msg err "jq SHA256 校验失败"; return 1; }
     fi
-
-    [[ $link ]] && {
-        msg warn "下载 ${name} > ${link}"
-        if _wget -t 3 -q -c $link -O $tmpfile; then
-            mv -f $tmpfile $is_ok
-        fi
-    }
+    mv -f "$tmpfile" "$is_ok"
 }
 
 # get server ip
 get_ip() {
-    export "$(_wget -4 -qO- https://one.one.one.one/cdn-cgi/trace | grep ip=)" &>/dev/null
-    [[ -z $ip ]] && export "$(_wget -6 -qO- https://one.one.one.one/cdn-cgi/trace | grep ip=)" &>/dev/null
+    ip=$(_wget -4 -t 1 -qO- https://one.one.one.one/cdn-cgi/trace | sed -n 's/^ip=//p')
+    [[ $ip ]] || ip=$(_wget -6 -t 1 -qO- https://one.one.one.one/cdn-cgi/trace | sed -n 's/^ip=//p')
+    [[ $ip ]]
 }
 
 # check background tasks status
@@ -276,7 +322,7 @@ pass_args() {
             shift 2
             ;;
         -l | --local-install)
-            [[ ! -f ${PWD}/src/core.sh || ! -f ${PWD}/$is_core.sh ]] && {
+            [[ ! -f ${PWD}/src/core.sh || ! -f ${PWD}/src/download.sh || ! -f ${PWD}/$is_core.sh ]] && {
                 err "当前目录 (${PWD}) 非完整的脚本目录."
             }
             local_install=1
@@ -294,14 +340,14 @@ pass_args() {
                 err "($1) 缺少必需参数, 正确使用示例: [$1 v1.8.13]"
             }
             is_core_ver=v${2//v/}
+            [[ $is_core_ver =~ ^v[0-9]+(\.[0-9]+)+$ ]] || err "内核版本格式无效。"
             shift 2
             ;;
         -h | --help)
             show_help
             ;;
         *)
-            echo -e "\n${is_err} ($@) 为未知参数...\n"
-            show_help
+            err "($1) 为未知参数，请使用 --help 查看帮助。"
             ;;
         esac
     done
@@ -312,7 +358,6 @@ pass_args() {
 
 # exit and remove tmpdir
 exit_and_del_tmpdir() {
-    rm -rf $tmpdir
     [[ ! $1 ]] && {
         msg err "哦豁.."
         msg err "安装过程出现错误..."
@@ -320,19 +365,28 @@ exit_and_del_tmpdir() {
         echo
         exit 1
     }
-    exit
+    exit 0
 }
 
 # main
 main() {
 
     # check old version
-    [[ -f $is_sh_bin && -d $is_core_dir/bin && -d $is_sh_dir && -d $is_conf_dir ]] && {
-        err "检测到脚本已安装, 如需重装请使用${green} ${is_core} reinstall ${none}命令."
+    [[ -e $is_sh_bin || -e $is_core_dir ]] && {
+        err "检测到已有安装或配置目录。请使用 sb U 更新；不要重复安装或覆盖现有配置。"
     }
 
     # check parameters
-    [[ $# -gt 0 ]] && pass_args $@
+    [[ $# -gt 0 ]] && pass_args "$@"
+    umask 077
+    install_temp_root=$(cd -- "${TMPDIR:-/tmp}" && pwd -P) || err "无法访问临时目录。"
+    tmpdir=$(mktemp -d "$install_temp_root/singbox-install.XXXXXX") || err "无法创建安全临时目录。"
+    trap install_cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    for i in "${tmp_var_lists[@]}"; do
+        export "$i=$tmpdir/$i"
+    done
 
     # show welcome msg
     clear
@@ -345,10 +399,9 @@ main() {
     [[ $is_core_ver ]] && msg warn "${is_core_name} 版本: ${yellow}$is_core_ver${none}"
     [[ $proxy ]] && msg warn "使用代理: ${yellow}$proxy${none}"
     # create tmpdir
-    mkdir -p $tmpdir
     # if is_core_file, copy file
     [[ $is_core_file ]] && {
-        cp -f $is_core_file $is_core_ok
+        cp -f "$is_core_file" "$is_core_ok" || exit_and_del_tmpdir
         msg warn "${yellow}${is_core_name} 文件使用 > $is_core_file${none}"
     }
     # local dir install sh script
@@ -367,12 +420,13 @@ main() {
     # install dependent pkg
     if [[ $cmd =~ apk ]]; then
         # Alpine: force install full versions to replace BusyBox applets
-        apk update &>/dev/null
-        apk add $is_pkg &>/dev/null
+        apk update &>/dev/null && apk add $is_pkg &>/dev/null
         [[ $? == 0 ]] && >$is_pkg_ok
     else
-        install_pkg $is_pkg &
+        install_pkg $is_pkg
     fi
+    [[ -f $is_pkg_ok ]] || exit_and_del_tmpdir
+    is_wget=$(type -P wget)
 
     # jq
     if [[ $(type -P jq) ]]; then
@@ -394,61 +448,67 @@ main() {
     # check background tasks status
     check_status
 
-    # test $is_core_file
-    if [[ $is_core_file ]]; then
-        mkdir -p $tmpdir/testzip
-        tar zxf $is_core_ok --strip-components 1 -C $tmpdir/testzip &>/dev/null
-        [[ $? != 0 ]] && {
-            msg err "${is_core_name} 文件无法通过测试."
-            exit_and_del_tmpdir
-        }
-        [[ ! -f $tmpdir/testzip/$is_core ]] && {
-            msg err "${is_core_name} 文件无法通过测试."
-            exit_and_del_tmpdir
-        }
-    fi
-
     # get server ip.
     [[ ! $ip ]] && {
         msg err "获取服务器 IP 失败."
         exit_and_del_tmpdir
     }
 
-    # create sh dir...
-    mkdir -p $is_sh_dir
-
-    # copy sh file or unzip sh zip file.
+    # 先在隔离目录验证脚本与内核，再写入安装路径。
+    mkdir "$tmpdir/source" "$tmpdir/core" || exit_and_del_tmpdir
     if [[ $local_install ]]; then
-        cp -rf $PWD/* $is_sh_dir
+        cp -R -- "$PWD/install.sh" "$PWD/sing-box.sh" "$PWD/src" "$tmpdir/source/" || exit_and_del_tmpdir
+        for i in LICENSE README.md docs; do
+            [[ ! -e $PWD/$i ]] || cp -R -- "$PWD/$i" "$tmpdir/source/" || exit_and_del_tmpdir
+        done
     else
-        tar zxf $is_sh_ok -C $is_sh_dir
+        install_unpack "$is_sh_ok" "$tmpdir/source" || exit_and_del_tmpdir
+        grep -Fxq "is_sh_ver=$(cat "$tmpdir/sh.version")" "$tmpdir/source/sing-box.sh" || exit_and_del_tmpdir
     fi
-
-    # create core bin dir
-    mkdir -p $is_core_dir/bin
-    # copy core file or unzip core zip file
-    if [[ $is_core_file ]]; then
-        cp -rf $tmpdir/testzip/* $is_core_dir/bin
+    for i in "$tmpdir/source/"*.sh "$tmpdir/source/src/"*.sh; do
+        bash -n "$i" || exit_and_del_tmpdir
+    done
+    # jq 便携版先完成摘要校验，随后才允许执行。
+    jq_bin=$(type -P jq)
+    if [[ $jq_not_found ]]; then
+        chmod 755 "$is_jq_ok" || exit_and_del_tmpdir
+        jq_bin=$is_jq_ok
+        "$jq_bin" --version >/dev/null || exit_and_del_tmpdir
+    fi
+    jq() { "$jq_bin" "$@"; }
+    . "$tmpdir/source/src/download.sh" || exit_and_del_tmpdir
+    declare -F download_verify_core download_unpack >/dev/null ||
+        err "发布包缺少安全下载功能，请使用包含本次改动的新 Release。"
+    if [[ ! $is_core_file ]]; then
+        is_core_ver=$(cat "$tmpdir/core.version") || exit_and_del_tmpdir
+        download_verify_core "$is_core_ok" "$tmpdir/core-release.json" "$is_core_ver" \
+            "sing-box-${is_core_ver#v}-linux-${is_arch}.tar.gz" || exit_and_del_tmpdir
     else
-        tar zxf $is_core_ok --strip-components 1 -C $is_core_dir/bin
+        warn "本地内核由你提供，请自行确认来源及摘要。"
     fi
+    download_unpack "$is_core_ok" "$tmpdir/core" 1 || exit_and_del_tmpdir
+    [[ -f $tmpdir/core/$is_core ]] || exit_and_del_tmpdir
+    chmod 755 "$tmpdir/core/$is_core" || exit_and_del_tmpdir
+    is_version_output=$("$tmpdir/core/$is_core" version) || exit_and_del_tmpdir
+    is_downloaded_version=$(sed -n 's/^sing-box version //p' <<<"$is_version_output" | head -n 1)
+    [[ $is_downloaded_version =~ ^[0-9]+(\.[0-9]+)+$ ]] || exit_and_del_tmpdir
+    [[ ! $is_core_ver || ${is_core_ver#v} == "$is_downloaded_version" ]] || exit_and_del_tmpdir
+    is_core_ver=$is_downloaded_version
 
-    # add alias
-    echo "alias sb=$is_sh_bin" >>/root/.bashrc
-    echo "alias $is_core=$is_sh_bin" >>/root/.bashrc
+    mkdir -p "$is_sh_dir" "$is_core_dir/bin" "$is_log_dir" "$is_conf_dir" || exit_and_del_tmpdir
+    chmod 700 "$is_core_dir" "$is_conf_dir" || exit_and_del_tmpdir
+    cp -R -- "$tmpdir/source/." "$is_sh_dir/" || exit_and_del_tmpdir
+    cp -- "$tmpdir/core/$is_core" "$is_core_bin" || exit_and_del_tmpdir
 
-    # core command
-    ln -sf $is_sh_dir/$is_core.sh $is_sh_bin
-    ln -sf $is_sh_dir/$is_core.sh ${is_sh_bin/$is_core/sb}
+    # 两个真实命令入口，不再重复修改 /root/.bashrc。
+    ln -sf "$is_sh_dir/$is_core.sh" "$is_sh_bin" || exit_and_del_tmpdir
+    ln -sf "$is_sh_dir/$is_core.sh" "${is_sh_bin/$is_core/sb}" || exit_and_del_tmpdir
 
-    # jq
-    [[ $jq_not_found ]] && mv -f $is_jq_ok /usr/bin/jq
-
-    # chmod
-    chmod +x $is_core_bin $is_sh_bin /usr/bin/jq ${is_sh_bin/$is_core/sb}
-
-    # create log dir
-    mkdir -p $is_log_dir
+    if [[ $jq_not_found ]]; then
+        mv -f "$is_jq_ok" /usr/bin/jq || exit_and_del_tmpdir
+        jq_bin=/usr/bin/jq
+    fi
+    chmod 755 "$is_core_bin" "$is_sh_bin" "${is_sh_bin/$is_core/sb}" || exit_and_del_tmpdir
 
     # show a tips msg
     msg ok "生成配置文件..."
@@ -456,19 +516,18 @@ main() {
     # create service
     load systemd.sh
     is_new_install=1
-    install_service $is_core &>/dev/null
-
-    # create condf dir
-    mkdir -p $is_conf_dir
+    install_service "$is_core" || exit_and_del_tmpdir
 
     load core.sh
     # create a reality config
-    add reality
+    add reality || exit_and_del_tmpdir
     # wait for background tasks (e.g., OpenRC service start)
     wait
+    "$is_core_bin" check -c "$is_config_json" -C "$is_conf_dir" || exit_and_del_tmpdir
+    download_restart core || exit_and_del_tmpdir
     # remove tmp dir and exit.
     exit_and_del_tmpdir ok
 }
 
 # start.
-main $@
+main "$@"

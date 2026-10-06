@@ -340,7 +340,8 @@ create() {
             get protocol "$2" || return 1
         fi
         [[ $net == "reality" ]] && is_add_public_key=",outbounds:[{type:\"direct\"},{tag:\"public_key_$is_public_key\",type:\"direct\"}]"
-        is_new_json=$(jq "{inbounds:[{tag:\"$is_config_name\",type:\"$is_protocol\",$is_listen,listen_port:$port,$json_str}]$is_add_public_key}" <<<{})
+        is_new_json=$(jq "{inbounds:[{tag:\"$is_config_name\",type:\"$is_protocol\",$is_listen,listen_port:$port,$json_str}]$is_add_public_key}" <<<{}) ||
+            { err "无法生成有效的节点配置，原配置未修改。"; return 1; }
         [[ $is_test_json ]] && return # tmp test
         # only show json, dont save to file.
         [[ $is_gen ]] && {
@@ -349,9 +350,15 @@ create() {
             msg
             return
         }
-        if [[ ! $is_change && ! $is_new_install && ! $host ]]; then
+        if [[ ! $is_new_install && ! $host && $is_ingress_caddy != true &&
+              ( ! $is_change || $is_config_file ) ]]; then
             load network.sh
-            network_apply "$is_json_file" "$is_new_json" create || return 1
+            if [[ $is_change && $is_config_file ]]; then
+                network_apply "$is_json_file" "$is_new_json" replace \
+                    "$is_conf_dir/$is_config_file" "$is_config_snapshot" || return 1
+            else
+                network_apply "$is_json_file" "$is_new_json" create || return 1
+            fi
             return 0
         fi
         # del old file
@@ -486,12 +493,12 @@ change() {
     }
     case $is_change_id in
     full)
-        add $net ${@:3}
+        add "$net" "${@:3}"
         ;;
     0)
         # new protocol
         is_set_new_protocol=1
-        add ${@:3}
+        add "${@:3}"
         ;;
     1)
         # new port
@@ -528,7 +535,7 @@ change() {
         [[ ! $path ]] && err "($is_config_file) 不支持更改路径."
         [[ $is_auto ]] && get_uuid && is_new_path=/$tmp_uuid
         [[ ! $is_new_path ]] && ask string is_new_path "请输入新路径:"
-        add $net auto auto $is_new_path
+        add "$net" auto auto "$is_new_path"
         ;;
     4)
         # new password
@@ -733,6 +740,8 @@ uninstall() {
 
 # manage run status
 manage() {
+    # 首次安装统一在完整配置校验后启动，避免半成品配置触发多次后台重启。
+    [[ ! $is_new_install ]] || return 0
     [[ $is_dont_auto_exit ]] && return
     case $1 in
     1 | start)
@@ -1122,7 +1131,7 @@ add() {
 
     # install caddy
     if [[ $is_install_caddy ]]; then
-        get install-caddy
+        get install-caddy || return 1
     fi
 
     # create json
@@ -1171,24 +1180,27 @@ get() {
         return 0
         ;;
     info)
-        get file $2
+        get file "$2"
         if [[ $is_config_file ]]; then
-            is_json_str=$(cat $is_conf_dir/"$is_config_file" | sed s#//.*##)
+            is_config_snapshot=$(cat "$is_conf_dir/$is_config_file") || return 1
+            is_json_str=$(sed '/^[[:space:]]*\/\//d' <<<"$is_config_snapshot")
             is_ingress_listen=$(jq -r '.inbounds[0].listen // "::"' <<<"$is_json_str")
             is_ingress_caddy=$(jq -r '.inbounds[0] | .listen == "127.0.0.1" and (.transport.headers.host // "") != ""' <<<"$is_json_str")
-            is_json_data=$(jq '(.inbounds[0]|.type,.listen_port,(.users[0]|.uuid,.password,.username),.method,.password,.override_port,.override_address,(.transport|.type,.path,.headers.host),(.tls|.server_name,.reality.private_key)),(.outbounds[1].tag)' <<<$is_json_str)
+            is_json_data=$(jq -r '((.inbounds[0]|.type,.listen_port,(.users[0]|.uuid,.password,.username),.method,.password,.override_port,.override_address,(.transport|.type,.path,.headers.host),(.tls|.server_name,.reality.private_key)),(.outbounds[1].tag)) | if . == null or . == "" then "-" else @base64 end' <<<"$is_json_str")
             [[ $? != 0 ]] && err "无法读取此文件: $is_config_file"
             is_up_var_set=(null is_protocol port uuid password username ss_method ss_password door_port door_addr net_type path host is_servername is_private_key is_public_key)
             [[ $is_debug ]] && msg "\n------------- debug: $is_config_file -------------"
             i=0
-            for v in $(sed 's/""/null/g;s/"//g' <<<"$is_json_data"); do
+            while IFS= read -r v; do
                 i=$((i + 1))
+                if [[ $v == - ]]; then
+                    v=
+                else
+                    v=$(printf '%s' "$v" | base64 -d) || return 1
+                fi
                 [[ $is_debug ]] && msg "$i-${is_up_var_set[$i]}: $v"
-                export ${is_up_var_set[$i]}="${v}"
-            done
-            for v in ${is_up_var_set[@]}; do
-                [[ ${!v} == 'null' ]] && unset $v
-            done
+                export "${is_up_var_set[$i]}=$v"
+            done <<<"$is_json_data"
 
             if [[ $is_private_key ]]; then
                 is_reality=1
@@ -1234,13 +1246,13 @@ get() {
             net=tuic
             is_protocol=$net
             [[ ! $password ]] && password=$uuid
-            is_users="users:[{uuid:\"$uuid\",password:\"$password\"}]"
+            is_users="users:$(jq -cn --arg uuid "$uuid" --arg password "$password" '[{uuid:$uuid,password:$password}]')"
             json_str="$is_users,congestion_control:\"bbr\",$is_tls_json"
             ;;
         trojan*)
             is_protocol=trojan
             [[ ! $password ]] && password=$uuid
-            is_users="users:[{password:\"$password\"}]"
+            is_users="users:$(jq -cn --arg password "$password" '[{password:$password}]')"
             [[ ! $host ]] && {
                 net=trojan
                 json_str="$is_users,${is_tls_json/alpn\:\[\"h3\"\],/}"
@@ -1250,7 +1262,7 @@ get() {
             net=hysteria2
             is_protocol=$net
             [[ ! $password ]] && password=$uuid
-            json_str="users:[{password:\"$password\"}],$is_tls_json"
+            json_str="users:$(jq -cn --arg password "$password" '[{password:$password}]'),$is_tls_json"
             ;;
         shadowsocks*)
             net=ss
@@ -1260,7 +1272,7 @@ get() {
                 ss_password=$uuid
                 [[ $(grep 2022 <<<$ss_method) ]] && ss_password=$(get ss2022)
             }
-            json_str="method:\"$ss_method\",password:\"$ss_password\""
+            json_str="method:\"$ss_method\",password:$(jq -cn --arg password "$ss_password" '$password')"
             ;;
         direct*)
             net=direct
@@ -1271,7 +1283,7 @@ get() {
             net=anytls
             is_protocol=$net
             [[ ! $password ]] && password=$uuid
-            is_users="users:[{password:\"$password\"}]"
+            is_users="users:$(jq -cn --arg password "$password" '[{password:$password}]')"
             if [[ $is_anytls_domain ]]; then
                 # sing-box >= 1.14.0 uses certificate_provider; older uses acme
                 is_core_minor=$(echo "$is_core_ver" | cut -d. -f2)
@@ -1290,7 +1302,7 @@ get() {
             is_protocol=$net
             [[ ! $is_socks_user ]] && is_socks_user=233boy
             [[ ! $is_socks_pass ]] && is_socks_pass=$uuid
-            json_str="users:[{username: \"$is_socks_user\", password: \"$is_socks_pass\"}]"
+            json_str="users:$(jq -cn --arg username "$is_socks_user" --arg password "$is_socks_pass" '[{username:$username,password:$password}]')"
             ;;
         *)
             err "无法识别协议: $is_config_file"
@@ -1369,9 +1381,9 @@ get() {
     install-caddy)
         _green "\n安装 Caddy 实现自动配置 TLS.\n"
         load download.sh
-        download caddy
+        download caddy || return 1
         load systemd.sh
-        install_service caddy &>/dev/null
+        install_service caddy &>/dev/null || return 1
         is_caddy=1
         _green "安装 Caddy 成功.\n"
         ;;
@@ -1471,8 +1483,8 @@ info() {
     ss)
         is_can_change=(0 1 4 6)
         is_info_show=(0 1 2 10 11)
-        is_url="ss://$(echo -n ${ss_method}:${ss_password} | base64 -w 0)@${is_addr}:${port}#233boy-$net-${is_addr}"
-        is_info_str=($is_protocol $is_addr $port $ss_password $ss_method)
+        is_url="ss://$(printf '%s' "${ss_method}:${ss_password}" | base64 -w 0)@${is_addr}:${port}#233boy-$net-${is_addr}"
+        is_info_str=("$is_protocol" "$is_addr" "$port" "$ss_password" "$ss_method")
         ;;
     trojan)
         is_insecure=1
@@ -1531,8 +1543,8 @@ info() {
     socks)
         is_can_change=(0 1 12 4)
         is_info_show=(0 1 2 19 10)
-        is_info_str=($is_protocol $is_addr $port $is_socks_user $is_socks_pass)
-        is_url="socks://$(echo -n ${is_socks_user}:${is_socks_pass} | base64 -w 0)@${is_addr}:${port}#233boy-$net-${is_addr}"
+        is_info_str=("$is_protocol" "$is_addr" "$port" "$is_socks_user" "$is_socks_pass")
+        is_url="socks://$(printf '%s' "${is_socks_user}:${is_socks_pass}" | base64 -w 0)@${is_addr}:${port}#233boy-$net-${is_addr}"
         ;;
     esac
     [[ $is_dont_show_info || $is_gen || $is_dont_auto_exit ]] && return # dont show info
@@ -1656,10 +1668,10 @@ update() {
         msg "\n发现 $is_show_name 新版本: $(_green $latest_ver)\n"
         is_new_ver=$latest_ver
     fi
-    download "$is_update_name" "$is_new_ver" || return 1
+    download "$is_update_name" "$is_new_ver" restart || return 1
     msg "更新成功, 当前 $is_show_name 版本: $(_green $is_new_ver)\n"
     msg "$(_green 请查看更新说明: https://github.com/$is_update_repo/releases/tag/$is_new_ver)\n"
-    [[ $is_update_name != 'sh' ]] && manage restart $is_update_name &
+    return 0
 }
 
 # main menu; if no prefer args.
@@ -1750,10 +1762,13 @@ main() {
     bin | pbk | check | completion | format | generate | geoip | geosite | merge | rule-set | run | tools)
         is_run_command=$1
         if [[ $1 == 'bin' ]]; then
-            $is_core_bin ${@:2}
+            "$is_core_bin" "${@:2}"
         else
-            [[ $is_run_command == 'pbk' ]] && is_run_command="generate reality-keypair"
-            $is_core_bin $is_run_command ${@:2}
+            if [[ $is_run_command == pbk ]]; then
+                "$is_core_bin" generate reality-keypair "${@:2}"
+            else
+                "$is_core_bin" "$is_run_command" "${@:2}"
+            fi
         fi
         ;;
     bbr)
@@ -1761,7 +1776,7 @@ main() {
         _try_enable_bbr
         ;;
     c | config | change)
-        change ${@:2}
+        change "${@:2}"
         ;;
     # client | genc)
     #     create client $2
@@ -1805,7 +1820,7 @@ main() {
         ;;
     dns)
         load dns.sh
-        dns_set ${@:2}
+        dns_set "${@:2}"
         ;;
     egress)
         load egress.sh
@@ -1848,7 +1863,7 @@ main() {
         log_set $2
         ;;
     url | qr)
-        url_qr $@
+        url_qr "$@"
         ;;
     un | uninstall)
         uninstall
@@ -1861,7 +1876,7 @@ main() {
             is_update_name=sh
             is_update_ver=
         }
-        update $is_update_name $is_update_ver
+        update "$is_update_name" "$is_update_ver"
         ;;
     ssss | ss2022)
         get $@
@@ -1893,7 +1908,7 @@ main() {
         ;;
     h | help | --help)
         load help.sh
-        show_help ${@:2}
+        show_help "${@:2}"
         ;;
     *)
         is_try_change=1
@@ -1901,7 +1916,7 @@ main() {
         if [[ $is_change_id ]]; then
             unset is_try_change
             [[ $2 ]] && {
-                change $2 $1 ${@:3}
+                change "$2" "$1" "${@:3}"
             } || {
                 change
             }
