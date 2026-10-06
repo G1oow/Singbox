@@ -1,12 +1,13 @@
 show_help() {
     case $1 in
     api | x25519 | tls | run | uuid | version)
-        $is_core_bin help $1 ${@:2}
+        "$is_core_bin" help "$1" "${@:2}"
         ;;
     *)
         [[ $1 ]] && warn "未知选项 '$1'"
         msg "$is_core_name script $is_sh_ver by $author"
         msg "Usage: $is_core [options]... [args]... "
+        msg "快捷命令: sb（菜单） / sb U（更新脚本） / sb s（状态）"
         msg
         help_info=(
             "基本:"
@@ -74,7 +75,8 @@ show_help() {
         done
         msg "谨慎使用 del, ddel, 此选项会直接删除配置; 无需确认"
         msg "反馈问题) $(msg_ul https://github.com/${is_sh_repo}/issues) "
-        msg "文档(doc) $(msg_ul https://233boy.com/$is_core/$is_core-script/)"
+        msg "本分支文档) $(msg_ul https://github.com/${is_sh_repo}#readme)"
+        msg "原作者教程) $(msg_ul https://233boy.com/$is_core/$is_core-script/)"
         ;;
 
     esac

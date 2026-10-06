@@ -16,16 +16,22 @@ network_restart() {
 
 # 主配置和节点配置共用事务；校验时替换目标文件，避免重复加载同一入站。
 network_apply() (
-    local target=$1 config=$2 operation=${3:-update} candidate backup="${1}.network.bak"
-    local lock="${is_config_json}.network.lock" file found=
+    local target=$1 config=$2 operation=${3:-update} source=${4:-$1} candidate backup
+    local lock="${is_config_json}.network.lock" file found= committed= confirmed=
     local check_args=()
-    if [[ $target != "$is_config_json" && ${target%/*} != "$is_conf_dir" ]]; then
+    if [[ $target != "$is_config_json" && ( ${target%/*} != "$is_conf_dir" || $target != *.json ) ]]; then
         err "只允许修改主配置或节点目录中的配置。"
         return 1
     fi
+    [[ ! -L $target && ! -L $source ]] || { err "不修改符号链接配置。"; return 1; }
+    if [[ $operation == replace ]]; then
+        [[ ${source%/*} == "$is_conf_dir" && $source == *.json && -f $source ]] ||
+            { err "原节点必须位于 conf 目录中。"; return 1; }
+        [[ $target != "$source" ]] || operation=update
+    fi
     case $operation in
     update) [[ -f $target ]] || { err "找不到配置文件: $target"; return 1; } ;;
-    create)
+    create | replace)
         [[ ${target%/*} == "$is_conf_dir" && $target == *.json ]] ||
             { err "新节点必须位于 conf 目录中。"; return 1; }
         [[ ! -e $target && ! -L $target ]] ||
@@ -34,11 +40,40 @@ network_apply() (
     *) err "未知网络配置操作: $operation"; return 1 ;;
     esac
     mkdir "$lock" 2>/dev/null || { err "其他网络配置操作正在执行，请稍后重试。"; return 1; }
-    candidate=$(mktemp "${target}.network.XXXXXX") || { rmdir "$lock"; return 1; }
-    trap 'rm -f -- "$candidate"; rmdir -- "$lock"' EXIT
-    if [[ $operation == update ]]; then
-        cp -p "$target" "$candidate" || return 1
+    if [[ $# -ge 5 && $(cat "$source") != "$5" ]]; then
+        rmdir "$lock"
+        err "节点已被其他操作修改，请重新读取后再试。"
+        return 1
     fi
+    backup=$source.network.bak
+    [[ ! -L $backup ]] || { rmdir "$lock"; err "备份路径不能是符号链接。"; return 1; }
+    candidate=$(mktemp "${target}.network.XXXXXX") || { rmdir "$lock"; return 1; }
+    cleanup_network() {
+        local result=$?
+        if [[ $committed && ! $confirmed ]]; then
+            if [[ $operation == create ]]; then
+                rm -f -- "$target" || { warn "无法撤销新节点: $target"; return 1; }
+            else
+                if ! cp -p "$backup" "$candidate" || ! mv -f "$candidate" "$source"; then
+                    warn "自动恢复失败，请使用备份恢复: $backup"
+                    rm -f -- "$candidate"
+                    rmdir "$lock"
+                    return 1
+                fi
+                [[ $operation != replace ]] || rm -f -- "$target"
+            fi
+            warn "应用失败，已恢复原配置，正在尝试恢复服务。"
+            network_restart || warn "服务仍未恢复，请检查 sing-box 日志。"
+        fi
+        rm -f -- "$candidate"
+        rmdir -- "$lock"
+        return "$result"
+    }
+    trap cleanup_network EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    [[ $operation == create ]] || cp -p "$source" "$candidate" || return 1
+    chmod 600 "$candidate" || return 1
     printf '%s\n' "$config" >"$candidate" || return 1
     if [[ $target == "$is_config_json" ]]; then
         check_args=(-c "$candidate" -C "$is_conf_dir")
@@ -46,7 +81,7 @@ network_apply() (
         check_args=(-c "$is_config_json")
         for file in "$is_conf_dir"/*.json; do
             [[ -f $file ]] || continue
-            if [[ $file == "$target" ]]; then
+            if [[ $file == "$source" ]]; then
                 [[ $operation != create ]] || { err "节点已存在，创建已中止。"; return 1; }
                 check_args+=(-c "$candidate")
                 found=1
@@ -64,27 +99,22 @@ network_apply() (
         err "配置校验失败，原配置未修改。"
         return 1
     fi
-    if [[ $operation == create ]]; then
+    if [[ $operation != create ]]; then
+        cp -p "$source" "$backup" && chmod 600 "$backup" || return 1
+    fi
+    if [[ $operation == create || $operation == replace ]]; then
         # 同目录硬链接提供原子且不覆盖已有文件的创建语义。
         ln -T "$candidate" "$target" || { err "无法创建节点，目标可能已存在。"; return 1; }
-        rm -f -- "$candidate"
-    else
-        cp -p "$target" "$backup" && mv -f "$candidate" "$target" || return 1
-    fi
-    if ! network_restart; then
-        if [[ $operation == create ]]; then
-            if rm -f -- "$target"; then
-                warn "重启失败，已撤销新节点，正在尝试恢复原服务。"
-                network_restart || warn "服务仍未恢复，请检查 sing-box 日志。"
-            else
-                warn "无法撤销新节点，请检查: $target"
-            fi
-        elif cp -p "$backup" "$candidate" && mv -f "$candidate" "$target"; then
-            warn "重启失败，已恢复原配置，正在尝试恢复服务。"
-            network_restart || warn "服务仍未恢复，请检查 sing-box 日志。"
-        else
-            warn "自动恢复失败，请使用备份恢复: $backup"
+        if [[ $operation == replace ]] && ! rm -f -- "$source"; then
+            rm -f -- "$target"
+            return 1
         fi
-        return 1
+    else
+        mv -f "$candidate" "$target" || return 1
     fi
+    # 新建使用硬链接，回滚前先解除临时链接，避免覆盖备份时改到已提交文件。
+    rm -f -- "$candidate"
+    committed=1
+    network_restart || return 1
+    confirmed=1
 )

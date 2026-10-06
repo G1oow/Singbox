@@ -1,0 +1,2 @@
+# Shell 脚本统一使用 LF，保证 Windows 检出后仍能在 Linux 执行。
+*.sh text eol=lf

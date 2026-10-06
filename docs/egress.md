@@ -80,3 +80,24 @@ SING_BOX_BIN=/path/to/sing-box bash tests/egress.sh
 源码测试与内核配置校验不能替代真实双栈 VPS 上的出口连通性测试。
 
 配置依据：[Dial Fields](https://sing-box.sagernet.org/configuration/shared/dial/)。
+
+## IPv4-only VPS 实网验证
+
+已有可信的 sing-box 二进制时，可以显式运行只监听回环地址的测试：
+
+```bash
+SING_BOX_BIN=/path/to/sing-box bash tests/ipv4-live.sh
+```
+
+需要 Bash、curl、jq 和 ss；不需要 Node.js。测试使用临时配置和随机空闲端口，
+通过 `127.0.0.1` 上的带认证 SOCKS5 代理访问 Cloudflare HTTPS 检测接口，核对实际公网 IPv4：
+
+- `prefer_ipv4`：IPv4 优先。
+- `ipv4_only`：仅解析 IPv4。
+- `auto`：默认策略。
+- `prefer_ipv6`：在 IPv4-only VPS 上应回退到 IPv4。
+
+可通过 `EXPECTED_IPV4` 指定预期的公网出口，适用于公网地址与网卡地址不同的 NAT VPS。
+测试不运行安装器、不注册或重启系统服务、不修改防火墙，也不开放公网监听端口；
+结束后关闭测试进程，日志及报告保留在输出的临时目录中。
+此测试验证 IPv4 代理链路和出口，不替代公网入站端口、云安全组或外部客户端的连接测试。

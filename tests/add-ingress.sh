@@ -223,4 +223,33 @@ run change Socks-32201.json passwd changed-password >/dev/null
 assert_json "$is_conf_dir/Socks-32201.json" '.inbounds[0].listen == "2001:db8::6" and .inbounds[0].users[0].password == "changed-password"'
 [[ $(cat "$is_config_json") == "$before" && ! -s $test_dir/lookup.log ]]
 echo "通过：添加、展示、后续修改均保持入口与出口独立"
+
+original=$(cat "$is_conf_dir/Socks-32201.json")
+: >"$test_dir/service.log"
+reject_config=1
+if run change Socks-32201.json passwd rejected >/dev/null 2>&1; then
+    echo "失败：修改已有节点绕过配置校验"; exit 1
+fi
+reject_config=0
+[[ $(cat "$is_conf_dir/Socks-32201.json") == "$original" && ! -s $test_dir/service.log ]]
+fail_restart=1
+if run change Socks-32201.json port 32230 >/dev/null 2>&1; then echo "重启失败仍报告修改成功"; exit 1; fi
+fail_restart=0
+[[ $(cat "$is_conf_dir/Socks-32201.json") == "$original" && ! -e $is_conf_dir/Socks-32230.json ]]
+[[ $(grep -c '^restart ' "$test_dir/service.log") == 2 ]]
+other=$(cat "$is_conf_dir/Socks-32202.json")
+if run change Socks-32201.json port 32202 >/dev/null 2>&1; then echo "改端口覆盖了同名节点"; exit 1; fi
+[[ $(cat "$is_conf_dir/Socks-32202.json") == "$other" && $(cat "$is_conf_dir/Socks-32201.json") == "$original" ]]
+echo "通过：修改校验失败不落盘，重命名失败恢复原节点，不覆盖其他节点"
+
+special_password='two  words * \ " // password'
+run change Socks-32201.json passwd "$special_password" >/dev/null
+[[ $(jq -r '.inbounds[0].users[0].password' "$is_conf_dir/Socks-32201.json") == "$special_password" ]]
+run change Socks-32201.json port 32231 >/dev/null
+[[ ! -e $is_conf_dir/Socks-32201.json ]]
+[[ $(jq -r '.inbounds[0].users[0].password' "$is_conf_dir/Socks-32231.json") == "$special_password" ]]
+url=$(run url Socks-32231.json)
+credentials=$(sed -n 's/.*socks:\/\/\([^@]*\)@.*/\1/p' <<<"$url" | base64 -d)
+[[ $credentials == "tester:$special_password" ]]
+echo "通过：密码中的空格、引号、反斜杠和通配符在修改、读取和分享链接中保持不变"
 echo "全部添加入口测试通过"

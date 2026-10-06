@@ -30,27 +30,42 @@
 # 一键安装
 
 仓库公开后，可使用下面的命令安装最新稳定版，**无需 GitHub CLI 或 Token**。
-如果仓库仍为私有，请使用[认证安装方式](docs/release.md)。
+如果仓库为私有，请使用[认证安装方式](docs/release.md#私有仓库)。
 
 **仅用于新 VPS，以 root 执行。** 系统需已安装 Bash、curl、tar、gzip 和 sha256sum。
 安装会配置代理服务；已有安装请勿重复运行，原上游脚本请先按[迁移说明](docs/release.md#从原上游脚本迁移)切换。
+请在空工作目录中执行，避免覆盖已有的 `get.sh`。
 
 ```bash
-bash -c 'set -e; workdir=$(mktemp -d); cd "$workdir"; release_url=https://github.com/G1oow/Singbox/releases/latest/download; curl -fsSL --retry 3 "$release_url/code.tar.gz" -o code.tar.gz; curl -fsSL --retry 3 "$release_url/sha256sums.txt" -o sha256sums.txt; sha256sum -c sha256sums.txt; mkdir source; tar -xzf code.tar.gz -C source; cd source; bash install.sh --local-install'
+curl -fsSLO https://raw.githubusercontent.com/G1oow/Singbox/main/get.sh && bash get.sh
 ```
 
-命令会下载发布包、校验 SHA256，再从独立源码目录安装；任一步骤失败都会停止。
+引导脚本会锁定同一个 Release，下载并校验 SHA256、检查归档路径和包内版本，再从独立目录安装。
+下载、校验或解压失败不会执行安装器；内部临时目录自动清理，`get.sh` 保留供审阅或复用。
+新短入口需先提交到远程 `main`，对应安装器需完成 Release 发布；仅修改本地文件不会使远程命令生效。
+
+所有下载保留 HTTPS 证书校验。内核使用官方资产摘要；没有摘要的旧版会明确警告，而不是声称已通过 SHA256 校验。
+详见[下载校验与版本选择](docs/release.md#指定版本或本地内核)。
 
 # 快速开始
 
 安装完成后，运行以下命令打开管理菜单：
 
 ```bash
-sing-box
+sb
 ```
 
-使用 `sing-box help` 查看命令；已安装本分支时，使用 `sing-box update sh` 更新脚本。
-更多说明：[IPv4 / IPv6 出口策略](docs/egress.md) · [安装、迁移与自动发布](docs/release.md)。
+`sb` 与 `sing-box` 等价，原有长命令继续可用：
+
+```bash
+sb help        # 查看命令
+sb U           # 更新脚本，注意大写 U
+sb s           # 查看运行状态
+sb a reality   # 添加 REALITY 节点
+```
+
+`sb u` 默认更新内核，不等同于 `sb U`。更新脚本会先校验再替换；内核更新失败会尝试恢复旧版。
+更多说明：[IPv4 / IPv6 入口策略](docs/ingress.md) · [出口策略](docs/egress.md) · [安装、迁移与自动发布](docs/release.md)。
 
 # 设计理念
 
@@ -68,14 +83,16 @@ sing-box
 
 # 文档
 
-安装及使用：https://233boy.com/sing-box/sing-box-script/
+本分支：[安装与更新](docs/release.md) · [入口策略](docs/ingress.md) · [出口策略](docs/egress.md)
+
+原作者教程：[安装及使用](https://233boy.com/sing-box/sing-box-script/)
 
 # 帮助
 
-使用：`sing-box help`
+使用：`sb help`（等价于 `sing-box help`），以当前安装版本输出为准。
 
-```
-sing-box script v1.0 by 233boy
+```text
+sing-box script by 233boy
 Usage: sing-box [options]... [args]...
 
 基本:
@@ -90,8 +107,8 @@ Usage: sing-box [options]... [args]...
    c, change [name] [option] [args... | auto]      更改配置
    d, del [name]                                   删除配置**
    i, info [name]                                  查看配置
-   qr [name]                                       二维码信息
-   url [name]                                      URL 信息
+   qr [name] [ipv4|ipv6]                           二维码信息，可选入口地址族
+   url [name] [ipv4|ipv6]                          URL 信息，可选入口地址族
    log                                             查看日志
 更改:
    full [name] [...]                               更改多个参数
@@ -108,6 +125,8 @@ Usage: sing-box [options]... [args]...
 
 进阶:
    dns [...]                                       设置 DNS
+   egress [ipv4|ipv6|ipv4-only|ipv6-only|auto|status] 设置默认 direct 出口策略
+   ingress [ipv4|ipv6|dual|status] [name] [address] 设置节点入口
    dd, ddel [name...]                              删除多个配置**
    fix [name]                                      修复一个配置
    fix-all                                         修复全部配置
@@ -135,6 +154,6 @@ Usage: sing-box [options]... [args]...
    h, help                                         显示此帮助界面
 
 谨慎使用 del, ddel, 此选项会直接删除配置; 无需确认
-反馈问题) https://github.com/233boy/sing-box/issues
-文档(doc) https://233boy.com/sing-box/sing-box-script/
+反馈问题) https://github.com/G1oow/Singbox/issues
+本分支文档) https://github.com/G1oow/Singbox#readme
 ```

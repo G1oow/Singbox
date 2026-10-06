@@ -26,7 +26,7 @@ PR 运行只有读取权限，不使用 `pull_request_target`。发布权限仅�
 
 ## 私有仓库的认证
 
-本仓库当前为私有仓库，匿名 `wget` 无法下载其 Release。
+如果仓库为私有，匿名 `wget` 无法下载其 Release。
 在 VPS 安装 [GitHub CLI](https://cli.github.com/)，然后**以运行 sing-box 管理脚本的用户（通常是 root）**登录：
 
 ```bash
@@ -41,47 +41,76 @@ Git SSH 登录与 Release API 登录不同，仅配置 SSH Key 不足以下载�
 
 ## 一键安装（新 VPS）
 
-前提：以 **root** 运行，已安装 GitHub CLI，并完成上面的仓库认证。
-复制下面整行即可下载最新稳定版、校验完整性并安装：
+**仅在新 VPS 上以 root 执行。** 引导入口需要 Bash、tar、gzip、sha256sum，以及 curl 或已认证的 GitHub CLI。
+命令会在当前目录保存 `get.sh`；请使用空工作目录，避免覆盖自己的同名文件。
+安装器会安装必要依赖并配置系统服务。已有安装使用 `sb U`，不要重复安装。
+
+### 公开仓库
 
 ```bash
-bash -c 'set -e; workdir=$(mktemp -d); GH_HOST=github.com gh release download -R G1oow/Singbox -p code.tar.gz -p sha256sums.txt -D "$workdir"; cd "$workdir"; sha256sum -c sha256sums.txt; mkdir source; tar -xzf code.tar.gz -C source; cd source; bash install.sh --local-install'
+curl -fsSLO https://raw.githubusercontent.com/G1oow/Singbox/main/get.sh && bash get.sh
 ```
 
-任一步骤失败都会中止，不会在下载或校验失败后继续安装。
-下载文件与安装源码分开存放，避免把压缩包复制进脚本安装目录。
-已经安装本分支时使用 `sing-box update sh`，不要重复安装。
+### 私有仓库
 
-同等操作的多行版本：
+先完成上面的 GitHub CLI 认证，再下载并运行同一个引导入口：
 
 ```bash
-workdir=$(mktemp -d)
-GH_HOST=github.com gh release download --repo G1oow/Singbox \
-  --pattern code.tar.gz --pattern sha256sums.txt --dir "$workdir"
-cd "$workdir"
-sha256sum -c sha256sums.txt
-mkdir source
-tar -xzf code.tar.gz -C source
-cd source
-bash install.sh --local-install
+gh api repos/G1oow/Singbox/contents/get.sh -H 'Accept: application/vnd.github.raw+json' > get.sh && bash get.sh
 ```
 
-安装会修改系统服务和代理配置，仅在准备安装的 VPS 上执行。
-下载核心仍使用 SagerNet 官方仓库，不使用本仓库编译的内核。
+`get.sh` 先确定稳定版标签，再从**同一个 Release**下载发布包和校验清单；
+SHA256、归档路径、版本或解压检查失败时不会执行安装器。内部临时目录退出时自动清理，
+下载的 `get.sh` 保留在当前目录，便于审阅或复用。整个流程不把访问令牌写入脚本或 URL。
+引导脚本本身依赖 HTTPS 和仓库访问权限建立信任；SHA256 检查不等于发布者签名。
+
+### 指定版本或本地内核
+
+```bash
+bash get.sh --help
+bash get.sh --core-version v1.13.14
+bash get.sh --core-file "/root/core archive.tar.gz"
+```
+
+指定脚本版本使用 `--release <实际存在的 Release 标签>`；`--core-version` 只指定内核版本。
+本地内核请使用绝对路径，其来源和摘要需要自行确认。
+短入口需先提交到远程 `main`，对应安装器需完成 Release 发布；仅修改本地文件不会改变远程下载结果。
+
+下载内核仍使用 SagerNet 官方仓库，不使用本仓库编译的内核：
+
+- 所有下载保留 HTTPS 证书校验；证书错误应检查系统时间、CA 和网络，不使用跳过验证选项。
+- 脚本和 jq 校验官方发布的 SHA256 清单；内核校验 GitHub 官方 Release 资产的 SHA256 元数据。
+- 1.11.4 等旧内核没有资产摘要时会明确警告，仅保留 HTTPS 保护；建议使用提供摘要的新版。
+- 临时目录使用 `mktemp -d` 原子创建；首次安装的配置目录仅 root 可访问，私钥权限为 `600`。
+- 不再向 `/root/.bashrc` 重复追加 alias，`sb` 与 `sing-box` 使用命令符号链接。
 
 ## 已使用本分支的 VPS
 
 完成认证后：
 
 ```bash
-sing-box update sh
-sing-box version
-sing-box egress status
+sb U
+sb v
+sb egress status
 ```
 
 更新仅覆盖脚本目录，不修改 `/etc/sing-box/config.json` 或 `conf/`，
 不会主动重启 sing-box 服务，因此出口策略保持不变。
-命令会读取本仓库最新稳定版，拒绝版本号与目标 Release 不一致的包。
+`sb U` 等价于 `sing-box update sh`，其中 `U` 必须大写；`sb u` 默认更新内核。
+更新会校验 SHA256、包内版本及脚本语法，在隔离目录解压后整体替换脚本目录；
+替换失败时恢复旧脚本，不在原目录直接解压覆盖。更新锁用于拒绝并发更新。
+
+### 更新内核或 Caddy
+
+```bash
+sb update core
+sb update caddy
+```
+
+新二进制需通过摘要（旧内核例外）、版本及现有配置检查后才会替换；
+备份分别保存在 `/etc/sing-box/bin/sing-box.update.bak` 和 `/usr/local/bin/caddy.update.bak`。
+更新命令等待重启和运行状态确认；失败返回非零状态，恢复旧二进制并尝试恢复服务。
+如果旧服务仍未恢复，脚本会提示查看日志，不会报告更新成功。
 
 ## 从原上游脚本迁移
 
@@ -115,3 +144,7 @@ PR 构建包用于测试，不会成为 `update sh` 的更新来源。
 bash tests/release.sh
 bash scripts/package.sh v1.19.0 /tmp/singbox-package
 ```
+
+Shell 文件通过 `.gitattributes` 固定使用 LF 换行；发布回归测试会按原始字节拒绝 CRLF，
+避免 Windows 上通过检查的脚本在 Linux VPS 上出现语法错误。
+IPv4-only VPS 的回环代理与实际公网出口验证见[IPv4 实网测试](egress.md#ipv4-only-vps-实网验证)。

@@ -52,10 +52,10 @@ load() {
     . $is_sh_dir/src/$1
 }
 
-# wget add --no-check-certificate
+# 保留系统 CA 校验；遇到证书错误时应修复时间或 CA，而非绕过验证。
 _wget() {
     # [[ $proxy ]] && export https_proxy=$proxy
-    wget --no-check-certificate "$@"
+    wget "$@"
 }
 
 # apt-get, yum, zypper or apk
@@ -109,12 +109,16 @@ is_core_ver=$($is_core_bin version | head -n1 | cut -d " " -f3)
 is_tls_cer=$is_core_dir/bin/tls.cer
 is_tls_key=$is_core_dir/bin/tls.key
 [[ ! -f $is_tls_cer || ! -f $is_tls_key ]] && {
-    is_tls_tmp=${is_tls_key/key/tmp}
-    $is_core_bin generate tls-keypair tls -m 456 >$is_tls_tmp
-    awk '/BEGIN PRIVATE KEY/,/END PRIVATE KEY/' $is_tls_tmp >$is_tls_key
-    awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/' $is_tls_tmp >$is_tls_cer
-    rm $is_tls_tmp
+    (
+        umask 077
+        is_tls_tmp=$(mktemp "$is_core_dir/bin/tls.XXXXXX") || exit 1
+        trap 'rm -f -- "$is_tls_tmp"' EXIT
+        "$is_core_bin" generate tls-keypair tls -m 456 >"$is_tls_tmp" || exit 1
+        awk '/BEGIN PRIVATE KEY/,/END PRIVATE KEY/' "$is_tls_tmp" >"$is_tls_key" || exit 1
+        awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/' "$is_tls_tmp" >"$is_tls_cer"
+    ) || err "生成临时 TLS 证书失败。"
 }
+chmod 600 "$is_tls_key" || err "无法设置 TLS 私钥权限。"
 
 if [[ $(pgrep -f $is_core_bin) ]]; then
     is_core_status=$(_green running)
@@ -145,5 +149,5 @@ if [[ -f $is_caddy_bin && -d $is_caddy_dir && $is_caddy_service ]]; then
 fi
 
 load core.sh
-[[ ! $args ]] && args=main
-main $args
+((${#args[@]})) || args=(main)
+main "${args[@]}"
