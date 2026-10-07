@@ -128,7 +128,27 @@ printf '#!/bin/bash\nif [[ $1 == version ]]; then echo v2.10.2; else exit "${FAI
     >"$test_dir/assets/caddy/caddy"
 chmod +x "$test_dir/assets/caddy/caddy"
 tar -czf "$test_dir/assets/caddy_2.10.2_linux_amd64.tar.gz" -C "$test_dir/assets/caddy" caddy
-(cd "$test_dir/assets"; sha256sum caddy_2.10.2_linux_amd64.tar.gz >caddy_2.10.2_checksums.txt)
+# Caddy 官方发布清单使用 SHA512，不可只用模拟的 SHA256 掩盖下载失败。
+(cd "$test_dir/assets"; sha512sum caddy_2.10.2_linux_amd64.tar.gz >caddy_2.10.2_checksums.txt)
+if download_verify "$test_dir/assets/caddy_2.10.2_linux_amd64.tar.gz" \
+    "$test_dir/assets/caddy_2.10.2_checksums.txt" caddy_2.10.2_linux_amd64.tar.gz >/dev/null 2>&1; then
+    echo "默认 SHA256 校验不应接受 SHA512 清单"
+    exit 1
+fi
+cp "$test_dir/assets/caddy_2.10.2_checksums.txt" "$test_dir/assets/bad-checksums.txt"
+cat "$test_dir/assets/caddy_2.10.2_checksums.txt" >>"$test_dir/assets/bad-checksums.txt"
+if download_verify "$test_dir/assets/caddy_2.10.2_linux_amd64.tar.gz" \
+    "$test_dir/assets/bad-checksums.txt" caddy_2.10.2_linux_amd64.tar.gz auto >/dev/null 2>&1; then
+    echo "不可接受重复的 SHA512 校验条目"
+    exit 1
+fi
+printf '%0128d  caddy_2.10.2_linux_amd64.tar.gz\n' 0 >"$test_dir/assets/bad-checksums.txt"
+if download_verify "$test_dir/assets/caddy_2.10.2_linux_amd64.tar.gz" \
+    "$test_dir/assets/bad-checksums.txt" caddy_2.10.2_linux_amd64.tar.gz auto >/dev/null 2>&1; then
+    echo "不可接受错误的 SHA512 摘要"
+    exit 1
+fi
+echo "通过：SHA512 格式、重复条目和摘要不符校验，不放宽脚本包的 SHA256 要求"
 printf 'example.org {}\n' >"$is_caddyfile"
 export FAIL_CHECK=1
 if run_download caddy v2.10.2 >/dev/null 2>&1; then echo "Caddy 未校验现有配置"; exit 1; fi
