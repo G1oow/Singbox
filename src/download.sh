@@ -33,16 +33,28 @@ download_fetch() {
 # 仅校验指定资产，不执行清单中其他路径，拒绝缺失或重复条目。
 download_verify() {
     local archive=$1 manifest=$2 asset=$3 digest file expected= actual
+    local algorithm=${4:-sha256}
     while read -r digest file; do
         file=${file#\*}
         [[ $file == "$asset" ]] || continue
-        [[ ! $expected && $digest =~ ^[[:xdigit:]]{64}$ ]] ||
+        [[ ! $expected && $digest =~ ^([[:xdigit:]]{64}|[[:xdigit:]]{128})$ ]] ||
             { err "校验清单无效: $asset"; return 1; }
         expected=${digest,,}
     done <"$manifest"
     [[ $expected ]] || { err "校验清单缺少 $asset"; return 1; }
-    actual=$(sha256sum "$archive") || return 1
-    [[ ${actual%% *} == "$expected" ]] || { err "SHA256 校验失败: $asset"; return 1; }
+    # 脚本包仍严格要求 SHA256；仅 Caddy 官方清单允许按摘要长度识别算法。
+    if [[ $algorithm == auto ]]; then
+        case ${#expected} in
+        64) algorithm=sha256 ;;
+        128) algorithm=sha512 ;;
+        esac
+    fi
+    case $algorithm:${#expected} in
+    sha256:64) actual=$(sha256sum "$archive") || return 1 ;;
+    sha512:128) actual=$(sha512sum "$archive") || return 1 ;;
+    *) err "校验算法或摘要长度无效: $asset"; return 1 ;;
+    esac
+    [[ ${actual%% *} == "$expected" ]] || { err "${algorithm^^} 校验失败: $asset"; return 1; }
 }
 
 download_unpack() {
@@ -187,7 +199,7 @@ download() (
             binary=$stage/source/sing-box
         else
             download_fetch "$base/caddy_${version#v}_checksums.txt" "$stage/checksums.txt" || return 1
-            download_verify "$archive" "$stage/checksums.txt" "$asset" || return 1
+            download_verify "$archive" "$stage/checksums.txt" "$asset" auto || return 1
             download_unpack "$archive" "$stage/source" || return 1
             binary=$stage/source/caddy
         fi

@@ -22,6 +22,7 @@
 - 一键添加 VMess-(WS/H2/HTTPUpgrade)-TLS
 - 一键添加 VLESS-(WS/H2/HTTPUpgrade)-TLS
 - 一键添加 Trojan-(WS/H2/HTTPUpgrade)-TLS
+- 引导式新增 CF CDN 节点（协议可选、邮箱自动生成、优选 IP/CSV 导出、验证与旧节点清理）
 - 一键启用 BBR
 - 一键更改伪装网站
 - 一键更改 (端口/UUID/密码/域名/路径/加密方式/SNI/等...)
@@ -62,10 +63,30 @@ sb help        # 查看命令
 sb U           # 更新脚本，注意大写 U
 sb s           # 查看运行状态
 sb a reality   # 添加 REALITY 节点
+sb cdn         # 打开 CF CDN 引导，协议可选、邮箱自动生成
 ```
 
 `sb u` 默认更新内核，不等同于 `sb U`。更新脚本会先校验再替换；内核更新失败会尝试恢复旧版。
 更多说明：[IPv4 / IPv6 入口策略](docs/ingress.md) · [出口策略](docs/egress.md) · [安装、迁移与自动发布](docs/release.md)。
+
+## CF CDN 边缘接入
+
+```bash
+sb cdn                                    # 分步引导，小白推荐
+sb cdn node.example.com vmess              # 快速创建，自动生成 ACME 联系地址
+sb cdn check node.example.com              # 预检 CF 边缘 TLS
+sb cdn export node.example.com --csv /root/tcp-result.csv
+sb cdn test node.example.com 104.16.0.1     # 示例 IP；从当前机器测试代理及 1 MiB 下载
+sb cdn remove old.example.com              # 确认后删除指定旧 CDN
+```
+
+先在 CF 将专用域名解析到 VPS，开启橙云、WebSockets 和 **Full (strict)**，放行 TCP 80/443，
+确保 ACME HTTP 验证路径不被强制 HTTPS、WAF 或 Access 拦截。脚本会确认后安装或复用 Caddy，
+创建新的节点并导出链接；向导最后可选择清理旧 CDN，不保留兼容路由，不触及独立 REALITY。
+
+随机联系地址不代表创建真实邮箱，向导不询问邮箱。普通 CDN 不支持直接代理 REALITY、
+TUIC、Hysteria2 等协议。CSV 须已在当前机器，VPS 检查不能代替大陆客户端测速。
+CF 接入不保证提速，且其自助协议限制 VPN/类似代理用途；前置条件和限制见 [CF CDN 使用说明](docs/cdn.md)。
 
 # 设计理念
 
@@ -127,6 +148,13 @@ Usage: sing-box [options]... [args]...
    dns [...]                                       设置 DNS
    egress [ipv4|ipv6|ipv4-only|ipv6-only|auto|status] 设置默认 direct 出口策略
    ingress [ipv4|ipv6|dual|status] [name] [address] 设置节点入口
+   cdn / cdn guide                                CF CDN 引导：协议可选，邮箱自动生成
+   cdn <domain> [vless|vmess|trojan] [--yes]        快速创建 CDN 节点
+   cdn check <domain> [IP...] [--csv file]         当前机器的 CF 边缘 TLS 预检
+   cdn status <domain> [IP]                        检查源站证书和 CF WebSocket
+   cdn test <domain> [IP]                          本机代理及 1 MiB 下载测试
+   cdn export <domain> [IP...] [--csv file]        导出优选 IP 链接，保留 SNI/Host
+   cdn remove <domain> [--yes]                     确认删除指定 CDN
    dd, ddel [name...]                              删除多个配置**
    fix [name]                                      修复一个配置
    fix-all                                         修复全部配置

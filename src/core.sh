@@ -44,6 +44,7 @@ mainmenu=(
     "帮助"
     "其他"
     "关于"
+    "CF CDN 引导配置"
 )
 info_list=(
     "协议 (protocol)"
@@ -478,6 +479,13 @@ change() {
         info $1
         [[ $is_auto_get_config ]] && msg "\n自动选择: $is_config_file"
     }
+    if [[ $host ]]; then
+        load cdn.sh
+        if cdn_is_managed "$host"; then
+            err "CDN 节点暂不支持旧版 change/fix 流程；请保留当前节点，用新域名运行 sb cdn 创建替代节点。"
+            return 1
+        fi
+    fi
     is_old_net=$net
     [[ $is_tcp_http ]] && net=http
     [[ $host ]] && net=$is_protocol-$net-tls
@@ -1072,6 +1080,11 @@ add() {
         fi
         # set host
         [[ ! $host ]] && ask string host "请输入域名:"
+        load cdn.sh
+        if [[ ! $is_gen ]] && cdn_is_managed "$host"; then
+            err "此域名已被 CDN 节点使用，不会覆盖。请使用其他域名。"
+            return 1
+        fi
         # test host dns
         get host-test
     else
@@ -1454,7 +1467,7 @@ info() {
                     is_can_change=(0 1 2 3 4)
                     is_info_show=(0 1 2 10 4 6 7 8)
                 }
-                is_url="$is_protocol://$uuid@$host:$is_https_port?encryption=none&security=tls&type=$net&host=$host&path=$path#233boy-$net-$host"
+                is_url="$is_protocol://$uuid@$host:$is_https_port?encryption=none&security=tls&sni=$host&type=$net&host=$host&path=$path#233boy-$net-$host"
             }
             [[ $is_caddy ]] && is_can_change+=(11)
             is_info_str=($is_protocol $is_addr $is_https_port $uuid $net $host $path 'tls')
@@ -1748,6 +1761,10 @@ is_main_menu() {
         load help.sh
         about
         ;;
+    11)
+        load cdn.sh
+        cdn_set
+        ;;
     esac
 }
 
@@ -1829,6 +1846,10 @@ main() {
     ingress)
         load ingress.sh
         ingress_set "${@:2}"
+        ;;
+    cdn)
+        load cdn.sh
+        cdn_set "${@:2}"
         ;;
     debug)
         is_debug=1

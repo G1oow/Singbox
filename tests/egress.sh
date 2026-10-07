@@ -220,3 +220,4 @@ echo "全部测试通过"
 # 沿用现有三个内核版本的 CI 测试入口，不额外增加 workflow 权限或依赖。
 bash "$repo_dir/tests/ingress.sh"
 bash "$repo_dir/tests/add-ingress.sh"
+bash "$repo_dir/tests/cdn.sh"
