@@ -160,6 +160,53 @@ get_pbk() {
     is_private_key=${is_tmp_pbk[0]}
 }
 
+# 机器 ID: 用于节点命名; 优先 SB_MACHINE_ID 环境变量, 其次主机名短名, 兜底 machine.
+get_machine_id() {
+    [[ $is_machine_id ]] && return 0
+    local id=${SB_MACHINE_ID:-}
+    [[ $id ]] || {
+        id=$(uname -n)
+        id=${id%%.*}
+    }
+    id=$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')
+    id=$(printf '%s' "$id" | tr -c 'a-z0-9-' '-')
+    id=$(printf '%s' "$id" | sed -E 's/^-+//;s/-+$//')
+    [[ $id ]] || id=machine
+    is_machine_id=$id
+    return 0
+}
+
+# 计算节点名: 前缀-地址族-机器ID; 基础名被其他节点占用时追加端口.
+# $1 前缀 $2 监听地址 $3 端口 $4 本节点文件名(可选); 需要区分但端口缺失时返回 1.
+config_target_name() {
+    local prefix=$1 listen=$2 port=$3 current=$4 family name target
+    get_machine_id
+    case $listen in
+    "::" | "") family=dual ;;
+    *:*) family=v6 ;;
+    *) family=v4 ;;
+    esac
+    name=$prefix-$family-$is_machine_id
+    target=$is_conf_dir/$name.json
+    # 基础名已被占用时追加端口; 唯一例外: 占用者正是本节点.
+    if [[ -e $target ]] && [[ ! ${current:-} || $target != "$is_conf_dir/$current" ]]; then
+        [[ $port ]] || return 1
+        name=$name-$port
+    fi
+    printf '%s\n' "$name.json"
+}
+
+# 节点命名: 协议-IPv6/v4-机器ID; 反代入口公网地址族由 Caddy 决定, 记为 dual.
+# 同机同协议同地址族节点重名时, 追加端口区分; 正在修改的本节点除外.
+set_config_name() {
+    local protocol=$1 listen=$2
+    if [[ $host ]]; then
+        listen= # 反代入口: 公网地址族由 Caddy 决定, 记为 dual
+    fi
+    is_config_name=$(config_target_name "$protocol" "$listen" "$port" "${is_config_file:-}") ||
+        { err "无法为 ($protocol) 确定唯一的节点命名."; return 1; }
+}
+
 show_list() {
     local index=1 item
     for item in "$@"; do
@@ -317,22 +364,16 @@ create() {
         local listen_address=::
         is_tls=none
         get new || return 1
-        # file name
         if [[ $host ]]; then
-            is_config_name=$2-${host}.json
             listen_address=127.0.0.1
-        elif [[ $is_anytls_domain ]]; then
-            is_config_name=$2-${is_anytls_domain}.json
-        else
-            is_config_name=$2-${port}.json
+        elif [[ $is_add_listen_resolved ]]; then
+            listen_address=$is_add_listen_resolved
+        elif [[ $is_change && $is_ingress_listen && $is_ingress_caddy != true ]]; then
+            listen_address=$is_ingress_listen
         fi
-        if [[ ! $host ]]; then
-            if [[ $is_add_listen_resolved ]]; then
-                listen_address=$is_add_listen_resolved
-            elif [[ $is_change && $is_ingress_listen && $is_ingress_caddy != true ]]; then
-                listen_address=$is_ingress_listen
-            fi
-        fi
+        # file name
+        # 节点命名: 协议-IPv6/v4-机器ID; 同机同协议同地址族重名时追加端口区分.
+        set_config_name "$2" "$listen_address"
         is_ingress_listen=$listen_address
         is_listen="listen: \"$listen_address\""
         is_json_file=$is_conf_dir/$is_config_name
@@ -1186,6 +1227,10 @@ get() {
         readarray -t is_all_json <<<"$(ls "$is_conf_dir" | grep -E '\.json$' | grep -E -i "$is_file_str" | sed '/dynamic-port-.*-link/d' | head -233)" # limit max 233 lines for show.
         [[ ! $is_all_json ]] && err "无法找到相关的配置文件: $2"
         [[ ${#is_all_json[@]} -eq 1 ]] && is_config_file=$is_all_json && is_auto_get_config=1
+        # 精确名优先: 新命名下 Socks 与 Shadowsocks 等存在子串包含, 避免直接弹选择.
+        [[ ! $is_config_file ]] && for v in "${is_all_json[@]}"; do
+            [[ ${v,,} == ${is_file_str,,} ]] && is_config_file=$v && is_auto_get_config=1
+        done
         [[ ! $is_config_file ]] && {
             [[ $is_dont_auto_exit ]] && return
             ask get_config_file

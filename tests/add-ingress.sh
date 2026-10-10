@@ -17,6 +17,7 @@ is_config_json=$test_dir/config.json
 is_conf_dir=$test_dir/conf
 is_core_status=running
 is_sh_ver=test
+is_machine_id=testvm
 is_systemd=1
 is_openrc=
 fail_ipv4=0
@@ -87,19 +88,19 @@ run egress ipv6 >/dev/null
 before=$(cat "$is_config_json")
 
 output=$(run add socks 32201 tester secret --ingress ipv6)
-assert_json "$is_conf_dir/Socks-32201.json" '.inbounds[0].listen == "2001:db8::6"'
+assert_json "$is_conf_dir/Socks-v6-testvm.json" '.inbounds[0].listen == "2001:db8::6"'
 [[ $output == *'@[2001:db8::6]:32201'* && $(cat "$is_config_json") == "$before" ]]
 if grep -q '^-4' "$test_dir/lookup.log"; then echo "IPv6 添加流程不应先获取 IPv4"; exit 1; fi
 echo "通过：命令行直接创建 IPv6 节点并立即显示正确链接"
 
-first_node=$(cat "$is_conf_dir/Socks-32201.json")
+first_node=$(cat "$is_conf_dir/Socks-v6-testvm.json")
 output=$(run add --ingress ipv4 socks 32202 tester secret)
-assert_json "$is_conf_dir/Socks-32202.json" '.inbounds[0].listen == "0.0.0.0"'
+assert_json "$is_conf_dir/Socks-v4-testvm.json" '.inbounds[0].listen == "0.0.0.0"'
 [[ $output == *'@198.51.100.4:32202'* ]]
 output=$(run add socks 32203 tester secret --ingress=dual)
-assert_json "$is_conf_dir/Socks-32203.json" '.inbounds[0].listen == "::"'
+assert_json "$is_conf_dir/Socks-dual-testvm.json" '.inbounds[0].listen == "::"'
 [[ $output == *'双栈入口可分别导出链接'* ]]
-[[ $(cat "$is_conf_dir/Socks-32201.json") == "$first_node" && $(cat "$is_config_json") == "$before" ]]
+[[ $(cat "$is_conf_dir/Socks-v6-testvm.json") == "$first_node" && $(cat "$is_config_json") == "$before" ]]
 echo "通过：新建 IPv4、IPv6、双栈节点共存，均保留同一个出口策略"
 
 : >"$test_dir/lookup.log"
@@ -110,10 +111,10 @@ output=$(run add socks 32205 tester secret --ingress ipv6)
 [[ $output == *'@[2001:db8::6]:32205'* ]]
 if grep -q '^-4' "$test_dir/lookup.log"; then echo "IPv6-only VPS 添加不应探测 IPv4"; exit 1; fi
 output=$(run add socks 32206 tester secret)
-assert_json "$is_conf_dir/Socks-32206.json" '.inbounds[0].listen == "::"'
+assert_json "$is_conf_dir/Socks-dual-testvm-32206.json" '.inbounds[0].listen == "::"'
 [[ $output == *'@[2001:db8::6]:32206'* ]]
 if run add socks 32220 tester secret --ingress ipv4 >/dev/null 2>&1; then exit 1; fi
-[[ ! -f $is_conf_dir/Socks-32220.json ]]
+[[ ! -f $is_conf_dir/Socks-v4-testvm-32220.json ]]
 echo "通过：IPv6-only VPS 可直接添加，旧命令保持双栈并正确回退 IPv6"
 
 # 驱动真实“添加配置”菜单，而不是先创建再调用 ingress。
@@ -123,22 +124,22 @@ for index in "${!protocol_list[@]}"; do
 done
 : >"$test_dir/lookup.log"
 output=$(printf '1\n%s\n2\n\n32207\ntester\nsecret\n' "$socks_choice" | run main)
-assert_json "$is_conf_dir/Socks-32207.json" '.inbounds[0].listen == "2001:db8::6"'
+assert_json "$is_conf_dir/Socks-v6-testvm-32207.json" '.inbounds[0].listen == "2001:db8::6"'
 [[ $output == *'请选择新节点的入口策略'* && $output == *'@[2001:db8::6]:32207'* ]]
 if grep -q '^-4' "$test_dir/lookup.log"; then exit 1; fi
 output=$(printf '%s\n2\n2001:db8::8\n32208\ntester\nsecret\n' "$socks_choice" | run add)
-assert_json "$is_conf_dir/Socks-32208.json" '.inbounds[0].listen == "2001:db8::8"'
+assert_json "$is_conf_dir/Socks-v6-testvm-32208.json" '.inbounds[0].listen == "2001:db8::8"'
 [[ $output == *'@[2001:db8::8]:32208'* ]]
 echo "通过：主菜单和 add 交互流程均可选择 IPv6、自动或手动填写地址"
 
 fail_ipv4=0
 output=$(run add reality 32209 00000000-0000-4000-8000-000000000001 example.org --ingress ipv6)
-assert_json "$is_conf_dir/VLESS-REALITY-32209.json" '.inbounds[0].listen == "2001:db8::6" and .inbounds[0].tls.reality.enabled'
+assert_json "$is_conf_dir/VLESS-REALITY-v6-testvm.json" '.inbounds[0].listen == "2001:db8::6" and .inbounds[0].tls.reality.enabled'
 [[ $output == *'@[2001:db8::6]:32209'* ]]
 echo "通过：默认 VLESS-REALITY 协议也直接使用 IPv6 入口"
 
 output=$(run add ss 32211 test-password chacha20-ietf-poly1305 --ingress ipv6)
-assert_json "$is_conf_dir/Shadowsocks-32211.json" '.inbounds[0].listen == "2001:db8::6" and .inbounds[0].type == "shadowsocks"'
+assert_json "$is_conf_dir/Shadowsocks-v6-testvm.json" '.inbounds[0].listen == "2001:db8::6" and .inbounds[0].type == "shadowsocks"'
 [[ $output == *'@[2001:db8::6]:32211'* ]]
 echo "通过：Shadowsocks 添加同样使用选定的 IPv6 入口"
 
@@ -150,7 +151,7 @@ output=$(run gen socks 32210 tester secret --ingress ipv4)
 json=$(sed -n '/^{/,$p' <<<"$output")
 [[ $(jq -r '.inbounds[0].listen' <<<"$json") == 0.0.0.0 ]]
 if run gen socks 32210 tester secret --ingress ipv6 >/dev/null 2>&1; then exit 1; fi
-[[ ! -s $test_dir/lookup.log && ! -f $is_conf_dir/Socks-32210.json ]]
+[[ ! -s $test_dir/lookup.log && ! -f $is_conf_dir/Socks-v4-testvm-32210.json ]]
 echo "通过：gen 支持入口参数，离线验证不探测网络、不写入文件"
 
 if [[ $(printf '%s\n' 1.12.0 "$is_core_ver" | sort -V | sed -n '1p') == 1.12.0 ]]; then
@@ -164,7 +165,7 @@ if [[ $(printf '%s\n' 1.12.0 "$is_core_ver" | sort -V | sed -n '1p') == 1.12.0 ]
     [[ $output == *'配置校验失败'* ]]
     grep -q 'type=aaaa' "$test_dir/lookup.log"
     grep -q '^check ' "$test_dir/check.log"
-    [[ ! -f $is_conf_dir/AnyTLS-example.org.json ]]
+    [[ ! -f $is_conf_dir/AnyTLS-v6-testvm.json ]]
     echo "通过：AnyTLS IPv6 添加验证 AAAA，兼容 IPv6 地址的不同写法"
 fi
 
@@ -173,7 +174,7 @@ expect_rejection() {
         echo "未拒绝错误选项: $*"
         exit 1
     fi
-    [[ ! -f $is_conf_dir/Socks-32220.json ]]
+    [[ ! -f $is_conf_dir/Socks-v4-testvm-32220.json && ! -f $is_conf_dir/Socks-v6-testvm-32220.json ]]
 }
 expect_rejection --ingress
 expect_rejection --ingress wrong
@@ -192,7 +193,7 @@ fail_ipv6=1
 expect_rejection --ingress ipv6
 fail_ipv6=0
 if run add wss example.org --ingress ipv6 >/dev/null 2>&1; then exit 1; fi
-[[ ! -f $is_conf_dir/VMess-WS-TLS-example.org.json ]]
+[[ ! -f $is_conf_dir/VMess-WS-TLS-dual-testvm.json ]]
 echo "通过：缺失、冲突、无效地址和不支持的反代入口参数均在创建前拒绝"
 
 : >"$test_dir/service.log"
@@ -209,9 +210,12 @@ fail_ready=1
 expect_rejection --ingress ipv6
 fail_ready=0
 [[ $(grep -c '^restart ' "$test_dir/service.log") == 2 ]]
-[[ $(cat "$is_config_json") == "$before" && $(cat "$is_conf_dir/Socks-32201.json") == "$first_node" ]]
-if run add socks 32201 another-user another-password --ingress ipv4 >/dev/null 2>&1; then exit 1; fi
-[[ $(cat "$is_conf_dir/Socks-32201.json") == "$first_node" ]]
+[[ $(cat "$is_config_json") == "$before" && $(cat "$is_conf_dir/Socks-v6-testvm.json") == "$first_node" ]]
+# 同名节点 (协议-地址族-机器ID) 已被其他节点占用时, 新建同名节点必须拒绝覆盖.
+printf '%s\n' '{"inbounds":[{"type":"socks","tag":"occupied","listen":"127.0.0.1","listen_port":32290,"users":[{"username":"tester","password":"test-password"}]}]}' >"$is_conf_dir/Socks-v4-testvm-32209.json"
+occupied_node=$(cat "$is_conf_dir/Socks-v4-testvm-32209.json")
+if run add socks 32209 another-user another-password --ingress ipv4 >/dev/null 2>&1; then exit 1; fi
+[[ $(cat "$is_conf_dir/Socks-v4-testvm-32209.json") == "$occupied_node" ]]
 [[ ! -d ${is_config_json}.network.lock ]]
 if compgen -G "$is_conf_dir/*.network.*" >/dev/null; then echo "存在未清理的创建临时文件"; exit 1; fi
 echo "通过：校验、重启或启动后早退失败均撤销新节点，不覆盖同名节点及出口配置"
@@ -219,36 +223,43 @@ echo "通过：校验、重启或启动后早退失败均撤销新节点，不�
 : >"$test_dir/lookup.log"
 fail_ipv4=1
 fail_ipv6=1
-run change Socks-32201.json passwd changed-password >/dev/null
-assert_json "$is_conf_dir/Socks-32201.json" '.inbounds[0].listen == "2001:db8::6" and .inbounds[0].users[0].password == "changed-password"'
+run change Socks-v6-testvm.json passwd changed-password >/dev/null
+assert_json "$is_conf_dir/Socks-v6-testvm.json" '.inbounds[0].listen == "2001:db8::6" and .inbounds[0].users[0].password == "changed-password"'
 [[ $(cat "$is_config_json") == "$before" && ! -s $test_dir/lookup.log ]]
 echo "通过：添加、展示、后续修改均保持入口与出口独立"
 
-original=$(cat "$is_conf_dir/Socks-32201.json")
+original=$(cat "$is_conf_dir/Socks-v6-testvm.json")
 : >"$test_dir/service.log"
 reject_config=1
-if run change Socks-32201.json passwd rejected >/dev/null 2>&1; then
+if run change Socks-v6-testvm.json passwd rejected >/dev/null 2>&1; then
     echo "失败：修改已有节点绕过配置校验"; exit 1
 fi
 reject_config=0
-[[ $(cat "$is_conf_dir/Socks-32201.json") == "$original" && ! -s $test_dir/service.log ]]
+[[ $(cat "$is_conf_dir/Socks-v6-testvm.json") == "$original" && ! -s $test_dir/service.log ]]
 fail_restart=1
-if run change Socks-32201.json port 32230 >/dev/null 2>&1; then echo "重启失败仍报告修改成功"; exit 1; fi
+if run change Socks-v6-testvm.json port 32230 >/dev/null 2>&1; then echo "重启失败仍报告修改成功"; exit 1; fi
 fail_restart=0
-[[ $(cat "$is_conf_dir/Socks-32201.json") == "$original" && ! -e $is_conf_dir/Socks-32230.json ]]
+[[ $(cat "$is_conf_dir/Socks-v6-testvm.json") == "$original" && ! -e $is_conf_dir/Socks-v6-testvm-32230.json ]]
 [[ $(grep -c '^restart ' "$test_dir/service.log") == 2 ]]
-other=$(cat "$is_conf_dir/Socks-32202.json")
-if run change Socks-32201.json port 32202 >/dev/null 2>&1; then echo "改端口覆盖了同名节点"; exit 1; fi
-[[ $(cat "$is_conf_dir/Socks-32202.json") == "$other" && $(cat "$is_conf_dir/Socks-32201.json") == "$original" ]]
-echo "通过：修改校验失败不落盘，重命名失败恢复原节点，不覆盖其他节点"
+other=$(cat "$is_conf_dir/Socks-v4-testvm.json")
+is_port_used() { [[ $1 == 32202 ]] && echo occupied; }
+if run change Socks-v6-testvm.json port 32202 >/dev/null 2>&1; then echo "改端口覆盖了其他节点占用的端口"; exit 1; fi
+is_port_used() { return 0; }
+[[ $(cat "$is_conf_dir/Socks-v4-testvm.json") == "$other" && $(cat "$is_conf_dir/Socks-v6-testvm.json") == "$original" ]]
+echo "通过：修改校验失败不落盘，重启失败恢复原节点，不覆盖其他节点或其端口"
 
 special_password='two  words * \ " // password'
-run change Socks-32201.json passwd "$special_password" >/dev/null
-[[ $(jq -r '.inbounds[0].users[0].password' "$is_conf_dir/Socks-32201.json") == "$special_password" ]]
-run change Socks-32201.json port 32231 >/dev/null
-[[ ! -e $is_conf_dir/Socks-32201.json ]]
-[[ $(jq -r '.inbounds[0].users[0].password' "$is_conf_dir/Socks-32231.json") == "$special_password" ]]
-url=$(run url Socks-32231.json)
+run change Socks-v6-testvm.json passwd "$special_password" >/dev/null
+[[ $(jq -r '.inbounds[0].users[0].password' "$is_conf_dir/Socks-v6-testvm.json") == "$special_password" ]]
+run change Socks-v6-testvm.json port 32231 >/dev/null
+[[ $(jq -r '.inbounds[0].listen_port' "$is_conf_dir/Socks-v6-testvm.json") == 32231 ]]
+# 修改旧命名节点时迁移为新命名: 协议-IPv6/v4-机器ID, 同名重名时追加端口区分.
+printf '%s\n' '{"inbounds":[{"type":"socks","tag":"legacy","listen":"2001:db8::6","listen_port":32233,"users":[{"username":"tester","password":"legacy-password"}]}]}' >"$is_conf_dir/Socks-32233.json"
+run change Socks-32233.json passwd "$special_password" >/dev/null
+[[ ! -e $is_conf_dir/Socks-32233.json ]]
+legacy=$is_conf_dir/Socks-v6-testvm-32233.json
+[[ $(jq -r '.inbounds[0].users[0].password' "$legacy") == "$special_password" ]]
+url=$(run url Socks-v6-testvm-32233.json)
 credentials=$(sed -n 's/.*socks:\/\/\([^@]*\)@.*/\1/p' <<<"$url" | base64 -d)
 [[ $credentials == "tester:$special_password" ]]
 echo "通过：密码中的空格、引号、反斜杠和通配符在修改、读取和分享链接中保持不变"

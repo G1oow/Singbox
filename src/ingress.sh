@@ -86,6 +86,21 @@ ingress_family() {
     esac
 }
 
+# 入口切换时同步节点命名: 地址族段 (v4/v6/dual) 与实际监听一致.
+# 仅对符合新命名规则的文件名生效; 旧命名文件保持原名, 待 change 时迁移.
+ingress_config_name() {
+    local name=$1 listen=$2 port=$3 base prefix pattern
+    get_machine_id
+    base=${name%.json}
+    pattern='^(.+)-(dual|v4|v6)-'"$is_machine_id"'(-[0-9]+)?$'
+    [[ $base =~ $pattern ]] || { printf '%s\n' "$name"; return 0; }
+    # 端口后缀与实际监听端口一致才视为新命名, 避免误匹配旧命名文件.
+    [[ -z ${BASH_REMATCH[3]} ]] || [[ ${BASH_REMATCH[3]} == -$port ]] ||
+        { printf '%s\n' "$name"; return 0; }
+    prefix=${BASH_REMATCH[1]}
+    config_target_name "$prefix" "$listen" "$port" "$name" || printf '%s\n' "$name"
+}
+
 ingress_is_caddy() {
     jq -e '.inbounds[0] | .listen == "127.0.0.1" and (.transport.headers.host // "") != ""' "$1" >/dev/null
 }
@@ -171,7 +186,7 @@ ingress_prepare_add() {
 
 ingress_set() {
     local mode=${1,,} name=$2 address=$3 config target
-    local is_config_file= is_auto_get_config= selection
+    local is_config_file= is_auto_get_config= selection port new_name
     local modes=(ipv4 ipv6 dual)
     [[ $# -le 3 ]] || { err "用法: $is_core ingress [ipv4|ipv6|dual|status] [name] [address]"; return 1; }
     case $mode in
@@ -201,9 +216,19 @@ ingress_set() {
     fi
     address=$(ingress_resolve_listen "$mode" "$address") || return 1
     config=$(jq --arg address "$address" '.inbounds[0].listen=$address' "$target") || return 1
+    port=$(jq -r '.inbounds[0].listen_port // empty' "$target")
+    # 入口切换时同步节点命名, 地址族段与实际监听一致.
+    new_name=$(ingress_config_name "$is_config_file" "$address" "$port")
     load network.sh
-    network_apply "$target" "$config" || return 1
-    msg "\n已更新入口: $is_config_file → $mode ($address)"
+    if [[ $new_name != "$is_config_file" ]]; then
+        config=$(jq --arg tag "$new_name" '.inbounds[0].tag=$tag' <<<"$config") || return 1
+        network_apply "$is_conf_dir/$new_name" "$config" replace "$target" || return 1
+        msg "\n已更新入口: $is_config_file → $mode ($address)"
+        msg "节点已同步重命名: $is_config_file → $new_name"
+    else
+        network_apply "$target" "$config" || return 1
+        msg "\n已更新入口: $is_config_file → $mode ($address)"
+    fi
     msg "其他节点和出口策略未修改。原配置备份: ${target}.network.bak\n"
 }
 
