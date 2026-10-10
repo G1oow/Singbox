@@ -26,16 +26,12 @@ in_conf() {
     else
         case $is_protocol in
         vmess | vless)
-            [[ $net_type == "http" ]] && {
-                net=http
-                is_tips_msg="新配置文件名: (VMess-HTTP-$port.json)"
-            }
+            [[ $net_type == "http" ]] && net=http
             [[ $is_reality == "reality" ]] && net=reality
             add $net
             ;;
         dokodemo-door)
             add door
-            is_tips_msg="新配置文件名: (Direct-$port.json)"
             ;;
         *socks*)
             add $is_protocol
@@ -47,7 +43,7 @@ in_conf() {
 
         esac
     fi
-    [[ ! $is_not_in_conf ]] && msg "导入: $1 $is_tips_msg" && rm $1
+    [[ ! $is_not_in_conf ]] && msg "导入: $1" && rm $1
 }
 is_change=1
 is_dont_auto_exit=1

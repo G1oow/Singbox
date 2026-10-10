@@ -31,6 +31,19 @@ sing-box add socks 30004 user4 password4 --ingress ipv6 --listen 2001:db8::2
 AnyTLS 域名证书节点会按 IPv6 检查 AAAA 记录，兼容压缩、展开和大小写不同的 IPv6 写法。
 IPv6-only VPS 的目标网站及 REALITY 握手目标仍需具备可用 IPv6；入口选择不会额外提供 IPv4 出口。
 
+## 节点命名规则
+
+生成的节点名（配置文件名与入站 tag）统一为 `协议-IPv6/v4-机器ID`：
+
+- 地址族取节点的入口策略：IPv4 入口为 `v4`，IPv6 入口为 `v6`，双栈为 `dual`；
+  反代型 `*-TLS` 协议的公网入口由 Caddy 管理，记为 `dual`。
+- 机器 ID 默认取主机名短名（第一个 `.` 之前的部分）；可用环境变量自定义：
+  `SB_MACHINE_ID=tokyo01 sb add socks ...` 会生成 `Socks-v4-tokyo01.json` 这类名称。
+- 同机同协议同地址族重名时，自动追加端口区分，例如 `Socks-v6-vm01-30002.json`；基础名空出后回落到基础名。
+- 切换入口（`ingress ipv4|ipv6|dual`）时同步重命名：地址族段始终与实际监听一致，
+  文件与入站 tag 一并更新；重命名同样先校验、原子替换，失败自动恢复，备份为 `原文件名.network.bak`。
+- 修改（`change`）旧命名的节点时自动迁移到新命名，不覆盖其他节点；旧命名文件切换入口时保持原名，待下次修改时迁移。
+
 新建直连入口会先校验主配置及全部节点，再原子创建配置；重名时拒绝覆盖。
 若重启失败，只撤销本次新节点并恢复原服务，不清除其他节点或出口策略。
 反代型 `*-TLS` 协议不接受入口选项，其公网 IPv4 / IPv6 由 Caddy 或外部反代管理，脚本会明确提示。
@@ -45,16 +58,17 @@ sing-box gen socks 30002 user2 password2 --ingress ipv6 --listen 2001:db8::2
 
 ```bash
 sing-box ingress status                         # 列出各节点的监听策略
-sing-box ingress ipv4 Socks-30001.json           # 仅 IPv4，监听 0.0.0.0
-sing-box ingress ipv6 Socks-30002.json           # 自动获取本机公网 IPv6 并绑定
-sing-box ingress ipv6 Socks-30002.json 2001:db8::2 # 或显式指定实际分配的 IPv6
-sing-box ingress dual Socks-30001.json           # 恢复双栈，监听 ::
+sing-box ingress ipv4 Socks-v4-vm01.json          # 仅 IPv4，监听 0.0.0.0
+sing-box ingress ipv6 Socks-v6-vm01.json          # 自动获取本机公网 IPv6 并绑定
+sing-box ingress ipv6 Socks-v6-vm01.json 2001:db8::2 # 或显式指定实际分配的 IPv6
+sing-box ingress dual Socks-v4-vm01.json          # 恢复双栈，监听 ::
 sing-box ingress                                # 交互选择节点和策略
 ```
 
 示例 IPv6 `2001:db8::2` 为文档地址，使用时必须换成 VPS 实际地址。
 菜单入口：`sing-box` → **其他** → **设置入口策略**。
-修改某个节点不会覆盖其他节点的入口设置，也不会改变其端口、密码、UUID、TLS、标签或路由。
+修改某个节点不会覆盖其他节点的入口设置，也不会改变其端口、密码、UUID、TLS 或路由。
+符合新命名规则的节点会在切换入口时同步重命名（文件与入站 tag 的地址族段随之更新）；旧命名文件保持原名。
 
 IPv6-only 绑定具体 IPv6 地址，**不是把 `::` 当成仅 IPv6**。
 Linux 上会检查该地址是否分配给本机；自动检测不适用于公网 IPv6 与本机地址不同的 NAT6 场景。
@@ -65,15 +79,15 @@ IPv4 可提供第三个参数绑定具体本机 IPv4；省略时监听所有 IPv
 ### 方式一：同一双栈节点，导出两个链接
 
 ```bash
-sing-box ingress dual Socks-30001.json
-sing-box url Socks-30001.json ipv4
-sing-box url Socks-30001.json ipv6
+sing-box ingress dual Socks-dual-vm01.json
+sing-box url Socks-dual-vm01.json ipv4
+sing-box url Socks-dual-vm01.json ipv6
 sing-box egress ipv6
 ```
 
 将两个链接导入客户端，即可分别通过 IPv4 和 IPv6 连接同一个节点。
 二者使用相同端口和凭证、相同入站标签、相同路由和默认出口。
-也支持 `sing-box qr Socks-30001.json ipv4` / `ipv6`。
+也支持 `sing-box qr Socks-dual-vm01.json ipv4` / `ipv6`。
 `egress ipv6` 表示出口 IPv6 优先、IPv4 回退，不要求客户端从 IPv6 入口连接。
 
 ### 方式二：两个独立配置
@@ -97,7 +111,7 @@ sing-box egress ipv4
 命令参数中的空格或通配符需使用引号包裹。Socks 用户名、密码和 Shadowsocks 密码在配置读写及 Base64 分享链接中保留原值：
 
 ```bash
-sb change Socks-30001.json passwd 'my long password'
+sb change Socks-v6-vm01.json passwd 'my long password'
 ```
 
 ## 分享链接和限制

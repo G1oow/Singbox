@@ -20,6 +20,7 @@ is_systemd=1
 is_openrc=
 is_core_status=running
 is_sh_ver=test
+is_machine_id=testvm
 is_caddy_conf=$test_dir/caddy
 node4=$is_conf_dir/Socks-32101.json
 node6=$is_conf_dir/Socks-32102.json
@@ -150,11 +151,12 @@ rmdir "${is_config_json}.network.lock"
 echo "通过：已有网络事务锁时拒绝修改"
 
 run change "${node6##*/}" passwd changed-password >/dev/null
+# 修改旧命名节点时迁移为新命名: 协议-IPv6/v4-机器ID
+node6=$is_conf_dir/Socks-v6-testvm.json
 assert_json "$node6" '.inbounds[0].listen == "2001:db8::6" and .inbounds[0].users[0].password == "changed-password"'
 run change "${node6##*/}" port 32103 >/dev/null
-node6=$is_conf_dir/Socks-32103.json
 assert_json "$node6" '.inbounds[0].listen == "2001:db8::6" and .inbounds[0].listen_port == 32103'
-echo "通过：修改密码和端口不会重置 IPv6-only 入口"
+echo "通过：修改密码和端口不会重置 IPv6-only 入口，旧命名同时迁移到新命名"
 
 saved_node=$(cat "$node4")
 config=$(jq '.inbounds[0] |= (.listen="127.0.0.1" | .transport={type:"ws",headers:{host:"example.org"}})' "$node4")
@@ -178,12 +180,39 @@ url6=$(run url "${node4##*/}" ipv6)
 printf '%s\n' "$saved_node" >"$node4"
 echo "通过：AnyTLS IP 入口保留域名 SNI"
 
+# 入口切换同步重命名: 地址族段与实际监听一致
 printf '9\n7\n2\n3\n' | run main >/dev/null
-assert_json "$node6" '.inbounds[0].listen == "::"'
-echo "通过：交互菜单可切换指定节点"
+node6=$is_conf_dir/Socks-dual-testvm.json
+assert_json "$node6" '.inbounds[0].listen == "::" and .inbounds[0].tag == "Socks-dual-testvm.json"'
+[[ ! -e $is_conf_dir/Socks-v6-testvm.json ]]
+echo "通过：交互菜单切换入口时同步重命名"
+
+# 目标基础名被其他节点占用时, 重命名追加端口区分
+jq -n --argjson port 32105 '{inbounds:[{type:"socks",tag:"Socks-v6-testvm.json",listen:"2001:db8::6",listen_port:$port,users:[{username:"tester",password:"test-password"}]}]}' >"$is_conf_dir/Socks-v6-testvm.json"
+run ingress ipv6 "${node6##*/}" 2001:db8::6 >/dev/null
+node6=$is_conf_dir/Socks-v6-testvm-32103.json
+assert_json "$node6" '.inbounds[0].listen == "2001:db8::6" and .inbounds[0].tag == "Socks-v6-testvm-32103.json"'
+[[ ! -e $is_conf_dir/Socks-dual-testvm.json ]]
+echo "通过：入口重命名遇重名节点时追加端口，不覆盖其他节点"
+
+# 重命名事务失败时恢复原节点, 不残留新名文件
+reject_config=1
+if run ingress dual "${node6##*/}" >/dev/null 2>&1; then echo "入口重命名失败未回滚"; exit 1; fi
+reject_config=0
+[[ -e $node6 && ! -e $is_conf_dir/Socks-dual-testvm.json ]]
+echo "通过：入口重命名校验失败时恢复原节点"
+
+# 基础名空出后, 再次切换入口回落到基础名, 与 add 命名规则一致
+rm -f "$is_conf_dir/Socks-v6-testvm.json"
+run ingress ipv6 "${node6##*/}" ::1 >/dev/null
+node6=$is_conf_dir/Socks-v6-testvm.json
+assert_json "$node6" '.inbounds[0].listen == "::1" and .inbounds[0].tag == "Socks-v6-testvm.json"'
+[[ ! -e $is_conf_dir/Socks-v6-testvm-32103.json ]]
+echo "通过：基础名空出后回落基础名，指定监听地址生效"
 
 run ingress ipv4 "${node4##*/}" 127.0.0.1 >/dev/null
-run ingress ipv6 "${node6##*/}" ::1 >/dev/null
+# 旧命名文件切换入口时保持原名, 待 change 时迁移
+[[ -e $is_conf_dir/Socks-32101.json && $(jq -r '.inbounds[0].listen' "$node4") == "127.0.0.1" ]]
 if [[ ${SING_BOX_BIN:-} ]] && command -v node >/dev/null; then
     for mode in ipv6 ipv4; do
         run egress "$mode" >/dev/null

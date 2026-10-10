@@ -18,6 +18,7 @@ show_help() {
             "   ss2022                                          返回一个可用于 Shadowsocks 2022 的密码\n"
             "一般:"
             "   a, add [protocol] [args... | auto] [--ingress ipv4|ipv6|dual] [--listen address] 添加配置"
+            "       生成节点名: 协议-IPv6/v4-机器ID; 机器ID 默认取主机名, 可用 SB_MACHINE_ID 自定义\n"
             "   c, change [name] [option] [args... | auto]      更改配置"
             "   d, del [name]                                   删除配置**"
             "   i, info [name]                                  查看配置"
